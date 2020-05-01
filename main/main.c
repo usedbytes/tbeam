@@ -8,9 +8,11 @@
 */
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 
 #include "driver/gpio.h"
 #include "driver/uart.h"
@@ -20,7 +22,6 @@
 
 #include "i2c_helper.h"
 #include "axp192.h"
-
 
 #define GPS_UART_TXD (GPIO_NUM_12)
 #define GPS_UART_RXD (GPIO_NUM_34)
@@ -36,7 +37,8 @@
 #define AXP192_I2C_SCL (GPIO_NUM_22)
 #define AXP192_IRQ     (GPIO_NUM_35)
 
-#define USER_BTN       (GPIO_NUM_36)
+#define USER_BTN       (GPIO_NUM_38)
+#define PMIC_IRQ       (GPIO_NUM_35)
 
 #define HEADER_VOLTAGE_RAIL AXP192_RAIL_DCDC1
 #define ESP32_VOLTAGE_RAIL  AXP192_RAIL_DCDC3
@@ -61,16 +63,52 @@
 
 #define BUF_SIZE (1024)
 
+const axp192_t axp = {
+    .read = &i2c_read,
+    .write = &i2c_write,
+};
+uint8_t irqmask[5] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+uint8_t irqstatus[5] = { 0 };
+EventGroupHandle_t flags;
+
+static xQueueHandle gpio_evt_queue = NULL;
+
+static void IRAM_ATTR gpio_isr_handler(void* arg)
+{
+    uint32_t gpio_num = (uint32_t)arg;
+    xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
+}
+
+static void power_off()
+{
+    // Flash LED
+    axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+
+    // Save whatever state needs saving...
+
+    // Power off all rails.
+    axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
+    axp192_set_rail_state(&axp, AXP192_RAIL_DCDC2, false);
+    axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, false);
+    axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
+
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+
+    // Turn off.
+    axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x80);
+
+    for ( ;; ) {
+        // This function does not return
+    }
+}
+
 void app_main(void)
 {
     printf("Hello world!\n");
 
-    i2c_init();
+    flags = xEventGroupCreate();
 
-    axp192_t axp = {
-        .read = &i2c_read,
-        .write = &i2c_write,
-    };
+    i2c_init();
 
     axp192_init(&axp);
 
@@ -78,7 +116,9 @@ void app_main(void)
     axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
     axp192_set_rail_state(&axp, AXP192_RAIL_DCDC2, false);
     axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, false);
+    axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
 
+#if 0
     // Set the GPS voltage and power it up
     axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
     axp192_set_rail_millivolts(&axp, AXP192_RAIL_LDO3, 3300);
@@ -116,4 +156,65 @@ void app_main(void)
     fflush(stdout);
     axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
     esp_deep_sleep(5000000);
+#endif
+
+
+
+    // Clear all IRQs
+    axp192_read_irq_status(&axp, irqmask, irqstatus, true);
+    memset(irqstatus, 0, sizeof(irqstatus));
+
+    irqmask[0] = 0;
+    irqmask[1] = 0;
+    // Short button press IRQ
+    irqmask[2] = (1 << 1);
+    irqmask[3] = 0;
+    irqmask[4] = 0;
+    axp192_write_irq_mask(&axp, irqmask);
+
+    gpio_config_t io_conf;
+
+    io_conf.intr_type = GPIO_PIN_INTR_NEGEDGE;
+    io_conf.pin_bit_mask = (1ULL << USER_BTN);
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_up_en = 0;
+    io_conf.pull_down_en = 0;
+    gpio_config(&io_conf);
+
+    io_conf.intr_type = GPIO_PIN_INTR_NEGEDGE;
+    io_conf.pin_bit_mask = (1ULL << PMIC_IRQ);
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_up_en = 0;
+    io_conf.pull_down_en = 0;
+    gpio_config(&io_conf);
+
+    gpio_evt_queue = xQueueCreate(3, sizeof(uint32_t));
+
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(USER_BTN, gpio_isr_handler, (void*)USER_BTN);
+    gpio_isr_handler_add(PMIC_IRQ, gpio_isr_handler, (void*)PMIC_IRQ);
+
+    int cnt = 0;
+    uint32_t io_num;
+    while(1) {
+        if(xQueueReceive(gpio_evt_queue, &io_num, 1000 / portTICK_RATE_MS)) {
+            switch (io_num) {
+            case USER_BTN:
+                printf("Button pressed. GPIO[%d] intr, val: %d\n", io_num, gpio_get_level(io_num));
+                break;
+            case PMIC_IRQ:
+                axp192_read_irq_status(&axp, irqmask, irqstatus, true);
+                if (irqstatus[2] & (1 << 1)) {
+                    printf("Power button pressed.\n");
+
+                    power_off();
+                }
+                break;
+            default:
+                printf("Unexpected GPIO event\n");
+            }
+        }
+
+        printf("cnt: %d\n", cnt++);
+    }
 }
