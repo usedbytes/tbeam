@@ -1,11 +1,8 @@
-/* Hello World Example
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2020 Brian Starkey <stark3y@gmail.com>
+// Portions Copyright (c) 2018 Manuel Bleichenbacher
+//    From ttn-esp32 example: https://github.com/manuelbl/ttn-esp32/blob/master/examples/hello_world/main/main.cpp
 
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
-*/
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
@@ -19,9 +16,13 @@
 #include "esp_system.h"
 #include "esp_sleep.h"
 #include "esp_spi_flash.h"
+#include "esp_event.h"
+#include "nvs_flash.h"
 
 #include "i2c_helper.h"
 #include "axp192.h"
+
+#include "TheThingsNetwork.h"
 
 #define GPS_UART_TXD (GPIO_NUM_12)
 #define GPS_UART_RXD (GPIO_NUM_34)
@@ -30,7 +31,9 @@
 #define LORA_MISO    (GPIO_NUM_19)
 #define LORA_MOSI    (GPIO_NUM_27)
 #define LORA_SS      (GPIO_NUM_18)
-#define LORA_DI0     (GPIO_NUM_26)
+#define LORA_DIO0     (GPIO_NUM_26)
+#define LORA_DIO1     (GPIO_NUM_33)
+#define LORA_DIO2     (GPIO_NUM_32)
 #define LORA_RST     (GPIO_NUM_23)
 
 #define AXP192_I2C_SDA (GPIO_NUM_21)
@@ -60,6 +63,28 @@
  * SysEN is connected to LDO1
  * N_OE is floating
  */
+
+// NOTE:
+// The LoRaWAN frequency and the radio chip must be configured by running 'make menuconfig'.
+// Go to Components / The Things Network, select the appropriate values and save.
+
+// Pins and other resources
+#define TTN_SPI_HOST      HSPI_HOST
+#define TTN_SPI_DMA_CHAN  2
+#define TTN_PIN_SPI_SCLK  LORA_SCK
+#define TTN_PIN_SPI_MOSI  LORA_MOSI
+#define TTN_PIN_SPI_MISO  LORA_MISO
+#define TTN_PIN_NSS       LORA_SS
+#define TTN_PIN_RXTX      TTN_NOT_CONNECTED
+#define TTN_PIN_RST       TTN_NOT_CONNECTED
+#define TTN_PIN_DIO0      LORA_DIO0
+#define TTN_PIN_DIO1      LORA_DIO1
+
+static TheThingsNetwork ttn;
+
+const unsigned TX_INTERVAL = 30;
+static uint8_t msgData[] = "Hello, world";
+
 
 #define BUF_SIZE (1024)
 
@@ -103,6 +128,45 @@ static void power_off()
     }
 }
 
+void sendMessages(void* pvParameter)
+{
+    while (1) {
+        // Flash LED
+        axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+        printf("Sending message...\n");
+        TTNResponseCode res = ttn.transmitMessage(msgData, sizeof(msgData) - 1);
+        printf(res == kTTNSuccessfulTransmission ? "Message sent.\n" : "Transmission failed.\n");
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
+
+        vTaskDelay(TX_INTERVAL * 1000 / portTICK_PERIOD_MS);
+    }
+}
+
+void monitor_buttons(void *pvParameter)
+{
+    uint32_t io_num;
+    while(1) {
+        if(xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
+            switch (io_num) {
+            case USER_BTN:
+                printf("Button pressed. GPIO[%d] intr, val: %d\n", io_num, gpio_get_level((gpio_num_t)io_num));
+                break;
+            case PMIC_IRQ:
+                axp192_read_irq_status(&axp, irqmask, irqstatus, true);
+                if (irqstatus[2] & (1 << 1)) {
+                    printf("Power button pressed.\n");
+
+                    power_off();
+                }
+                break;
+            default:
+                printf("Unexpected GPIO event\n");
+            }
+        }
+    }
+}
+
 void setup_battery_charger() {
     // 4.2 V, 780 mA
     axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_1, 0xC8);
@@ -110,7 +174,7 @@ void setup_battery_charger() {
     axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_2, 0x41);
 }
 
-void app_main(void)
+extern "C" void app_main(void)
 {
     printf("Hello world!\n");
 
@@ -132,6 +196,11 @@ void app_main(void)
     axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, false);
     axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
     axp192_set_rail_state(&axp, AXP192_RAIL_EXTEN, false);
+
+    printf("Power on LoRa\n");
+    axp192_set_rail_millivolts(&axp, LORA_VOLTAGE_RAIL, 3300);
+    axp192_set_rail_state(&axp, LORA_VOLTAGE_RAIL, true);
+    vTaskDelay(10 / portTICK_PERIOD_MS);
 
 #if 0
     // Set the GPS voltage and power it up
@@ -189,47 +258,70 @@ void app_main(void)
 
     gpio_config_t io_conf;
 
-    io_conf.intr_type = GPIO_PIN_INTR_NEGEDGE;
+    io_conf.intr_type = GPIO_INTR_NEGEDGE;
     io_conf.pin_bit_mask = (1ULL << USER_BTN);
     io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = 0;
-    io_conf.pull_down_en = 0;
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     gpio_config(&io_conf);
 
-    io_conf.intr_type = GPIO_PIN_INTR_NEGEDGE;
+    io_conf.intr_type = GPIO_INTR_NEGEDGE;
     io_conf.pin_bit_mask = (1ULL << PMIC_IRQ);
     io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = 0;
-    io_conf.pull_down_en = 0;
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     gpio_config(&io_conf);
 
     gpio_evt_queue = xQueueCreate(3, sizeof(uint32_t));
+
+    xTaskCreate(monitor_buttons, "monitor_buttons", 1024 * 4, (void* )0, 3, nullptr);
 
     gpio_install_isr_service(0);
     gpio_isr_handler_add(USER_BTN, gpio_isr_handler, (void*)USER_BTN);
     gpio_isr_handler_add(PMIC_IRQ, gpio_isr_handler, (void*)PMIC_IRQ);
 
+    // Initialize the NVS (non-volatile storage) for saving and restoring the keys
+    esp_err_t err;
+    err = nvs_flash_init();
+    ESP_ERROR_CHECK(err);
+
+    // Initialize SPI bus
+    spi_bus_config_t spi_bus_config;
+    spi_bus_config.miso_io_num = TTN_PIN_SPI_MISO;
+    spi_bus_config.mosi_io_num = TTN_PIN_SPI_MOSI;
+    spi_bus_config.sclk_io_num = TTN_PIN_SPI_SCLK;
+    spi_bus_config.quadwp_io_num = -1;
+    spi_bus_config.quadhd_io_num = -1;
+    spi_bus_config.max_transfer_sz = 0;
+    spi_bus_config.flags = 0;
+    spi_bus_config.intr_flags = 0;
+    err = spi_bus_initialize(TTN_SPI_HOST, &spi_bus_config, TTN_SPI_DMA_CHAN);
+    ESP_ERROR_CHECK(err);
+
+    // Configure the SX127x pins
+    ttn.configurePins(TTN_SPI_HOST, TTN_PIN_NSS, TTN_PIN_RXTX, TTN_PIN_RST, TTN_PIN_DIO0, TTN_PIN_DIO1);
+
+    // The below line can be commented after the first run as the data is saved in NVS
+    ttn.provision(devEui, appEui, appKey);
+
+    printf("Joining...\n");
+    // Flash LED
+    axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+    if (ttn.join())
+    {
+        printf("Joined.\n");
+        axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
+        xTaskCreate(sendMessages, "send_messages", 1024 * 4, (void* )0, 3, nullptr);
+    }
+    else
+    {
+        printf("Join failed. Goodbye\n");
+        axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x5a);
+    }
+
     int cnt = 0;
-    uint32_t io_num;
     while(1) {
-        if(xQueueReceive(gpio_evt_queue, &io_num, 1000 / portTICK_RATE_MS)) {
-            switch (io_num) {
-            case USER_BTN:
-                printf("Button pressed. GPIO[%d] intr, val: %d\n", io_num, gpio_get_level(io_num));
-                break;
-            case PMIC_IRQ:
-                axp192_read_irq_status(&axp, irqmask, irqstatus, true);
-                if (irqstatus[2] & (1 << 1)) {
-                    printf("Power button pressed.\n");
-
-                    power_off();
-                }
-                break;
-            default:
-                printf("Unexpected GPIO event\n");
-            }
-        }
-
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
         printf("cnt: %d\n", cnt++);
 
         float charge_current, batt_voltage;
