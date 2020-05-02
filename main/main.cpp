@@ -21,6 +21,7 @@
 
 #include "i2c_helper.h"
 #include "axp192.h"
+#include "ttn_ids.h"
 
 #include "TheThingsNetwork.h"
 
