@@ -91,6 +91,7 @@ static void power_off()
     axp192_set_rail_state(&axp, AXP192_RAIL_DCDC2, false);
     axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, false);
     axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
+    axp192_set_rail_state(&axp, AXP192_RAIL_EXTEN, false);
 
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 
@@ -130,6 +131,7 @@ void app_main(void)
     axp192_set_rail_state(&axp, AXP192_RAIL_DCDC2, false);
     axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, false);
     axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
+    axp192_set_rail_state(&axp, AXP192_RAIL_EXTEN, false);
 
 #if 0
     // Set the GPS voltage and power it up
