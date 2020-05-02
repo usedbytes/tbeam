@@ -102,6 +102,13 @@ static void power_off()
     }
 }
 
+void setup_battery_charger() {
+    // 4.2 V, 780 mA
+    axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_1, 0xC8);
+    // Default values - 40 min precharge, 8 hour constant current
+    axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_2, 0x41);
+}
+
 void app_main(void)
 {
     printf("Hello world!\n");
@@ -111,6 +118,12 @@ void app_main(void)
     i2c_init();
 
     axp192_init(&axp);
+    setup_battery_charger();
+
+    // Flash LED
+    axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
 
     // Power off everything we don't need
     axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
@@ -216,5 +229,12 @@ void app_main(void)
         }
 
         printf("cnt: %d\n", cnt++);
+
+        float charge_current, batt_voltage;
+        axp192_read(&axp, AXP192_CHARGE_CURRENT, &charge_current);
+        axp192_read(&axp, AXP192_BATTERY_VOLTAGE, &batt_voltage);
+
+        printf("Charge current: %1.2f A, Batt volts: %1.2f V\n", charge_current, batt_voltage);
+
     }
 }
