@@ -4,3 +4,6 @@
 [submodule "components/esp_i2c_hal"]
 	path = components/esp_i2c_hal
 	url = https://github.com/tuupola/esp_i2c_hal.git
+[submodule "components/ttn-esp32"]
+	path = components/ttn-esp32
+	url = https://github.com/manuelbl/ttn-esp32.git
