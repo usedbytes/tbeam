@@ -90,8 +90,8 @@ static uint8_t msgData[] = "Hello, world";
 #define BUF_SIZE (1024)
 
 const axp192_t axp = {
-    .read = &i2c_read,
-    .write = &i2c_write,
+	.read = &i2c_read,
+	.write = &i2c_write,
 };
 uint8_t irqmask[5] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 uint8_t irqstatus[5] = { 0 };
@@ -101,235 +101,235 @@ static xQueueHandle gpio_evt_queue = NULL;
 
 static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
-    uint32_t gpio_num = (uint32_t)arg;
-    xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
+	uint32_t gpio_num = (uint32_t)arg;
+	xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
 }
 
 static void power_off()
 {
-    // Flash LED
-    axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+	// Flash LED
+	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
 
-    // Save whatever state needs saving...
+	// Save whatever state needs saving...
 
-    // Power off all rails.
-    axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
-    axp192_set_rail_state(&axp, AXP192_RAIL_DCDC2, false);
-    axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, false);
-    axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
-    axp192_set_rail_state(&axp, AXP192_RAIL_EXTEN, false);
+	// Power off all rails.
+	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
+	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC2, false);
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, false);
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
+	axp192_set_rail_state(&axp, AXP192_RAIL_EXTEN, false);
 
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+	vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-    // Turn off.
-    axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x80);
+	// Turn off.
+	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x80);
 
-    for ( ;; ) {
-        // This function does not return
-    }
+	for ( ;; ) {
+		// This function does not return
+	}
 }
 
 void sendMessages(void* pvParameter)
 {
-    while (1) {
-        // Flash LED
-        axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
-        printf("Sending message...\n");
-        TTNResponseCode res = ttn.transmitMessage(msgData, sizeof(msgData) - 1);
-        printf(res == kTTNSuccessfulTransmission ? "Message sent.\n" : "Transmission failed.\n");
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-        axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
+	while (1) {
+		// Flash LED
+		axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+		printf("Sending message...\n");
+		TTNResponseCode res = ttn.transmitMessage(msgData, sizeof(msgData) - 1);
+		printf(res == kTTNSuccessfulTransmission ? "Message sent.\n" : "Transmission failed.\n");
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
+		axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
 
-        vTaskDelay(TX_INTERVAL * 1000 / portTICK_PERIOD_MS);
-    }
+		vTaskDelay(TX_INTERVAL * 1000 / portTICK_PERIOD_MS);
+	}
 }
 
 void monitor_buttons(void *pvParameter)
 {
-    uint32_t io_num;
-    while(1) {
-        if(xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
-            switch (io_num) {
-            case USER_BTN:
-                printf("Button pressed. GPIO[%d] intr, val: %d\n", io_num, gpio_get_level((gpio_num_t)io_num));
-                break;
-            case PMIC_IRQ:
-                axp192_read_irq_status(&axp, irqmask, irqstatus, true);
-                if (irqstatus[2] & (1 << 1)) {
-                    printf("Power button pressed.\n");
+	uint32_t io_num;
+	while(1) {
+		if(xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
+			switch (io_num) {
+				case USER_BTN:
+					printf("Button pressed. GPIO[%d] intr, val: %d\n", io_num, gpio_get_level((gpio_num_t)io_num));
+					break;
+				case PMIC_IRQ:
+					axp192_read_irq_status(&axp, irqmask, irqstatus, true);
+					if (irqstatus[2] & (1 << 1)) {
+						printf("Power button pressed.\n");
 
-                    power_off();
-                }
-                break;
-            default:
-                printf("Unexpected GPIO event\n");
-            }
-        }
-    }
+						power_off();
+					}
+					break;
+				default:
+					printf("Unexpected GPIO event\n");
+			}
+		}
+	}
 }
 
 void setup_battery_charger() {
-    // 4.2 V, 780 mA
-    axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_1, 0xC8);
-    // Default values - 40 min precharge, 8 hour constant current
-    axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_2, 0x41);
+	// 4.2 V, 780 mA
+	axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_1, 0xC8);
+	// Default values - 40 min precharge, 8 hour constant current
+	axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_2, 0x41);
 }
 
 extern "C" void app_main(void)
 {
-    printf("Hello world!\n");
+	printf("Hello world!\n");
 
-    flags = xEventGroupCreate();
+	flags = xEventGroupCreate();
 
-    i2c_init();
+	i2c_init();
 
-    axp192_init(&axp);
-    setup_battery_charger();
+	axp192_init(&axp);
+	setup_battery_charger();
 
-    // Flash LED
-    axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-    axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
+	// Flash LED
+	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+	vTaskDelay(500 / portTICK_PERIOD_MS);
+	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
 
-    // Power off everything we don't need
-    axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
-    axp192_set_rail_state(&axp, AXP192_RAIL_DCDC2, false);
-    axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, false);
-    axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
-    axp192_set_rail_state(&axp, AXP192_RAIL_EXTEN, false);
+	// Power off everything we don't need
+	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
+	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC2, false);
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, false);
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
+	axp192_set_rail_state(&axp, AXP192_RAIL_EXTEN, false);
 
-    printf("Power on LoRa\n");
-    axp192_set_rail_millivolts(&axp, LORA_VOLTAGE_RAIL, 3300);
-    axp192_set_rail_state(&axp, LORA_VOLTAGE_RAIL, true);
-    vTaskDelay(10 / portTICK_PERIOD_MS);
+	printf("Power on LoRa\n");
+	axp192_set_rail_millivolts(&axp, LORA_VOLTAGE_RAIL, 3300);
+	axp192_set_rail_state(&axp, LORA_VOLTAGE_RAIL, true);
+	vTaskDelay(10 / portTICK_PERIOD_MS);
 
 #if 0
-    // Set the GPS voltage and power it up
-    axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
-    axp192_set_rail_millivolts(&axp, AXP192_RAIL_LDO3, 3300);
-    axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
+	// Set the GPS voltage and power it up
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
+	axp192_set_rail_millivolts(&axp, AXP192_RAIL_LDO3, 3300);
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
 
-    /* Configure parameters of an UART driver,
-     * communication pins and install the driver */
-    uart_config_t uart_config = {
-        .baud_rate = 9600,
-        .data_bits = UART_DATA_8_BITS,
-        .parity    = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_APB,
-    };
-    uart_driver_install(UART_NUM_1, BUF_SIZE * 2, 0, 0, NULL, 0);
-    uart_param_config(UART_NUM_1, &uart_config);
-    uart_set_pin(UART_NUM_1, GPS_UART_TXD, GPS_UART_RXD, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+	/* Configure parameters of an UART driver,
+	 * communication pins and install the driver */
+	uart_config_t uart_config = {
+		.baud_rate = 9600,
+		.data_bits = UART_DATA_8_BITS,
+		.parity    = UART_PARITY_DISABLE,
+		.stop_bits = UART_STOP_BITS_1,
+		.flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+		.source_clk = UART_SCLK_APB,
+	};
+	uart_driver_install(UART_NUM_1, BUF_SIZE * 2, 0, 0, NULL, 0);
+	uart_param_config(UART_NUM_1, &uart_config);
+	uart_set_pin(UART_NUM_1, GPS_UART_TXD, GPS_UART_RXD, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
-    // Configure a temporary buffer for the incoming data
-    uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
+	// Configure a temporary buffer for the incoming data
+	uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
 
-    int i;
-    for (i = 0; i < 3000; i++) {
-        // Read data from the UART
-        int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 20 / portTICK_RATE_MS);
-        // Write data back to the UART
-        //uart_write_bytes(UART_NUM_1, (const char *) data, len);
-	fwrite(data, 1, len, stdout);
-        vTaskDelay(500 / portTICK_PERIOD_MS);
-        fflush(stdout);
-    }
+	int i;
+	for (i = 0; i < 3000; i++) {
+		// Read data from the UART
+		int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 20 / portTICK_RATE_MS);
+		// Write data back to the UART
+		//uart_write_bytes(UART_NUM_1, (const char *) data, len);
+		fwrite(data, 1, len, stdout);
+		vTaskDelay(500 / portTICK_PERIOD_MS);
+		fflush(stdout);
+	}
 
-    printf("Sleeping...\n");
-    fflush(stdout);
-    axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
-    esp_deep_sleep(5000000);
+	printf("Sleeping...\n");
+	fflush(stdout);
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
+	esp_deep_sleep(5000000);
 #endif
 
 
 
-    // Clear all IRQs
-    axp192_read_irq_status(&axp, irqmask, irqstatus, true);
-    memset(irqstatus, 0, sizeof(irqstatus));
+	// Clear all IRQs
+	axp192_read_irq_status(&axp, irqmask, irqstatus, true);
+	memset(irqstatus, 0, sizeof(irqstatus));
 
-    irqmask[0] = 0;
-    irqmask[1] = 0;
-    // Short button press IRQ
-    irqmask[2] = (1 << 1);
-    irqmask[3] = 0;
-    irqmask[4] = 0;
-    axp192_write_irq_mask(&axp, irqmask);
+	irqmask[0] = 0;
+	irqmask[1] = 0;
+	// Short button press IRQ
+	irqmask[2] = (1 << 1);
+	irqmask[3] = 0;
+	irqmask[4] = 0;
+	axp192_write_irq_mask(&axp, irqmask);
 
-    gpio_config_t io_conf;
+	gpio_config_t io_conf;
 
-    io_conf.intr_type = GPIO_INTR_NEGEDGE;
-    io_conf.pin_bit_mask = (1ULL << USER_BTN);
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_config(&io_conf);
+	io_conf.intr_type = GPIO_INTR_NEGEDGE;
+	io_conf.pin_bit_mask = (1ULL << USER_BTN);
+	io_conf.mode = GPIO_MODE_INPUT;
+	io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+	gpio_config(&io_conf);
 
-    io_conf.intr_type = GPIO_INTR_NEGEDGE;
-    io_conf.pin_bit_mask = (1ULL << PMIC_IRQ);
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_config(&io_conf);
+	io_conf.intr_type = GPIO_INTR_NEGEDGE;
+	io_conf.pin_bit_mask = (1ULL << PMIC_IRQ);
+	io_conf.mode = GPIO_MODE_INPUT;
+	io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+	gpio_config(&io_conf);
 
-    gpio_evt_queue = xQueueCreate(3, sizeof(uint32_t));
+	gpio_evt_queue = xQueueCreate(3, sizeof(uint32_t));
 
-    xTaskCreate(monitor_buttons, "monitor_buttons", 1024 * 4, (void* )0, 3, nullptr);
+	xTaskCreate(monitor_buttons, "monitor_buttons", 1024 * 4, (void* )0, 3, nullptr);
 
-    gpio_install_isr_service(0);
-    gpio_isr_handler_add(USER_BTN, gpio_isr_handler, (void*)USER_BTN);
-    gpio_isr_handler_add(PMIC_IRQ, gpio_isr_handler, (void*)PMIC_IRQ);
+	gpio_install_isr_service(0);
+	gpio_isr_handler_add(USER_BTN, gpio_isr_handler, (void*)USER_BTN);
+	gpio_isr_handler_add(PMIC_IRQ, gpio_isr_handler, (void*)PMIC_IRQ);
 
-    // Initialize the NVS (non-volatile storage) for saving and restoring the keys
-    esp_err_t err;
-    err = nvs_flash_init();
-    ESP_ERROR_CHECK(err);
+	// Initialize the NVS (non-volatile storage) for saving and restoring the keys
+	esp_err_t err;
+	err = nvs_flash_init();
+	ESP_ERROR_CHECK(err);
 
-    // Initialize SPI bus
-    spi_bus_config_t spi_bus_config;
-    spi_bus_config.miso_io_num = TTN_PIN_SPI_MISO;
-    spi_bus_config.mosi_io_num = TTN_PIN_SPI_MOSI;
-    spi_bus_config.sclk_io_num = TTN_PIN_SPI_SCLK;
-    spi_bus_config.quadwp_io_num = -1;
-    spi_bus_config.quadhd_io_num = -1;
-    spi_bus_config.max_transfer_sz = 0;
-    spi_bus_config.flags = 0;
-    spi_bus_config.intr_flags = 0;
-    err = spi_bus_initialize(TTN_SPI_HOST, &spi_bus_config, TTN_SPI_DMA_CHAN);
-    ESP_ERROR_CHECK(err);
+	// Initialize SPI bus
+	spi_bus_config_t spi_bus_config;
+	spi_bus_config.miso_io_num = TTN_PIN_SPI_MISO;
+	spi_bus_config.mosi_io_num = TTN_PIN_SPI_MOSI;
+	spi_bus_config.sclk_io_num = TTN_PIN_SPI_SCLK;
+	spi_bus_config.quadwp_io_num = -1;
+	spi_bus_config.quadhd_io_num = -1;
+	spi_bus_config.max_transfer_sz = 0;
+	spi_bus_config.flags = 0;
+	spi_bus_config.intr_flags = 0;
+	err = spi_bus_initialize(TTN_SPI_HOST, &spi_bus_config, TTN_SPI_DMA_CHAN);
+	ESP_ERROR_CHECK(err);
 
-    // Configure the SX127x pins
-    ttn.configurePins(TTN_SPI_HOST, TTN_PIN_NSS, TTN_PIN_RXTX, TTN_PIN_RST, TTN_PIN_DIO0, TTN_PIN_DIO1);
+	// Configure the SX127x pins
+	ttn.configurePins(TTN_SPI_HOST, TTN_PIN_NSS, TTN_PIN_RXTX, TTN_PIN_RST, TTN_PIN_DIO0, TTN_PIN_DIO1);
 
-    // The below line can be commented after the first run as the data is saved in NVS
-    ttn.provision(devEui, appEui, appKey);
+	// The below line can be commented after the first run as the data is saved in NVS
+	ttn.provision(devEui, appEui, appKey);
 
-    printf("Joining...\n");
-    // Flash LED
-    axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
-    if (ttn.join())
-    {
-        printf("Joined.\n");
-        axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
-        xTaskCreate(sendMessages, "send_messages", 1024 * 4, (void* )0, 3, nullptr);
-    }
-    else
-    {
-        printf("Join failed. Goodbye\n");
-        axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x5a);
-    }
+	printf("Joining...\n");
+	// Flash LED
+	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+	if (ttn.join())
+	{
+		printf("Joined.\n");
+		axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
+		xTaskCreate(sendMessages, "send_messages", 1024 * 4, (void* )0, 3, nullptr);
+	}
+	else
+	{
+		printf("Join failed. Goodbye\n");
+		axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x5a);
+	}
 
-    int cnt = 0;
-    while(1) {
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-        printf("cnt: %d\n", cnt++);
+	int cnt = 0;
+	while(1) {
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
+		printf("cnt: %d\n", cnt++);
 
-        float charge_current, batt_voltage;
-        axp192_read(&axp, AXP192_CHARGE_CURRENT, &charge_current);
-        axp192_read(&axp, AXP192_BATTERY_VOLTAGE, &batt_voltage);
+		float charge_current, batt_voltage;
+		axp192_read(&axp, AXP192_CHARGE_CURRENT, &charge_current);
+		axp192_read(&axp, AXP192_BATTERY_VOLTAGE, &batt_voltage);
 
-        printf("Charge current: %1.2f A, Batt volts: %1.2f V\n", charge_current, batt_voltage);
+		printf("Charge current: %1.2f A, Batt volts: %1.2f V\n", charge_current, batt_voltage);
 
-    }
+	}
 }
