@@ -13,6 +13,7 @@
 
 #include "driver/gpio.h"
 #include "driver/uart.h"
+#include "driver/adc.h"
 #include "esp_system.h"
 #include "esp_sleep.h"
 #include "esp_spi_flash.h"
@@ -189,7 +190,7 @@ extern "C" void app_main(void)
 	// Flash LED
 	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
 	vTaskDelay(500 / portTICK_PERIOD_MS);
-	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
+	//axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
 
 	// Power off everything we don't need
 	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
@@ -198,12 +199,22 @@ extern "C" void app_main(void)
 	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
 	axp192_set_rail_state(&axp, AXP192_RAIL_EXTEN, false);
 
+	adc1_config_width(ADC_WIDTH_BIT_12);
+	adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_DB_11);
+	adc1_config_channel_atten(ADC1_CHANNEL_1, ADC_ATTEN_DB_11);
+	adc1_config_channel_atten(ADC1_CHANNEL_3, ADC_ATTEN_DB_11);
+
+	// Set the GPS voltage and power it up
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
+	axp192_set_rail_millivolts(&axp, AXP192_RAIL_LDO3, 3300);
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
+
+#if 0
 	printf("Power on LoRa\n");
 	axp192_set_rail_millivolts(&axp, LORA_VOLTAGE_RAIL, 3300);
 	axp192_set_rail_state(&axp, LORA_VOLTAGE_RAIL, true);
 	vTaskDelay(10 / portTICK_PERIOD_MS);
 
-#if 0
 	// Set the GPS voltage and power it up
 	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
 	axp192_set_rail_millivolts(&axp, AXP192_RAIL_LDO3, 3300);
@@ -273,6 +284,30 @@ extern "C" void app_main(void)
 	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
 	gpio_config(&io_conf);
 
+	io_conf.intr_type = GPIO_INTR_DISABLE;
+	io_conf.pin_bit_mask = (1ULL << GPIO_NUM_25);
+	io_conf.mode = GPIO_MODE_OUTPUT;
+	io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+	gpio_config(&io_conf);
+
+	io_conf.intr_type = GPIO_INTR_DISABLE;
+	io_conf.pin_bit_mask = (1ULL << GPIO_NUM_36);
+	io_conf.mode = GPIO_MODE_INPUT;
+	io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+	gpio_config(&io_conf);
+
+	io_conf.intr_type = GPIO_INTR_DISABLE;
+	io_conf.pin_bit_mask = (1ULL << GPIO_NUM_39);
+	io_conf.mode = GPIO_MODE_INPUT;
+	io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+	gpio_config(&io_conf);
+
+	gpio_set_drive_capability(GPIO_NUM_25, GPIO_DRIVE_CAP_1);
+	gpio_set_level(GPIO_NUM_25, 1);
+
 	gpio_evt_queue = xQueueCreate(3, sizeof(uint32_t));
 
 	xTaskCreate(monitor_buttons, "monitor_buttons", 1024 * 4, (void* )0, 3, nullptr);
@@ -281,6 +316,7 @@ extern "C" void app_main(void)
 	gpio_isr_handler_add(USER_BTN, gpio_isr_handler, (void*)USER_BTN);
 	gpio_isr_handler_add(PMIC_IRQ, gpio_isr_handler, (void*)PMIC_IRQ);
 
+#if 0
 	// Initialize the NVS (non-volatile storage) for saving and restoring the keys
 	esp_err_t err;
 	err = nvs_flash_init();
@@ -319,17 +355,26 @@ extern "C" void app_main(void)
 		printf("Join failed. Goodbye\n");
 		axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x5a);
 	}
+#endif
 
 	int cnt = 0;
 	while(1) {
-		vTaskDelay(1000 / portTICK_PERIOD_MS);
-		printf("cnt: %d\n", cnt++);
+		vTaskDelay(300 / portTICK_PERIOD_MS);
+		//printf("cnt: %d\n", cnt++);
 
+		/*
 		float charge_current, batt_voltage;
 		axp192_read(&axp, AXP192_CHARGE_CURRENT, &charge_current);
 		axp192_read(&axp, AXP192_BATTERY_VOLTAGE, &batt_voltage);
 
 		printf("Charge current: %1.2f A, Batt volts: %1.2f V\n", charge_current, batt_voltage);
+		*/
+
+		int val0 = adc1_get_raw(ADC1_CHANNEL_0);
+		int val1 = adc1_get_raw(ADC1_CHANNEL_1);
+		int val2 = adc1_get_raw(ADC1_CHANNEL_3);
+
+		printf("0: %5d 1: %5d 2: %5d\n", val0, val1, val2);
 
 	}
 }
