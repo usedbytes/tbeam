@@ -135,7 +135,7 @@ void setup_battery_charger() {
 	axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_2, 0x41);
 }
 
-extern "C" void app_main(void)
+void app_main(void)
 {
 	printf("Hello world!\n");
 
@@ -243,7 +243,7 @@ extern "C" void app_main(void)
 
 	gpio_evt_queue = xQueueCreate(3, sizeof(uint32_t));
 
-	xTaskCreate(monitor_buttons, "monitor_buttons", 1024 * 4, (void* )0, 3, nullptr);
+	xTaskCreate(monitor_buttons, "monitor_buttons", 1024 * 4, (void* )0, 3, NULL);
 
 	gpio_install_isr_service(0);
 	gpio_isr_handler_add(USER_BTN, gpio_isr_handler, (void*)USER_BTN);
