@@ -22,9 +22,6 @@
 
 #include "i2c_helper.h"
 #include "axp192.h"
-#include "ttn_ids.h"
-
-#include "TheThingsNetwork.h"
 
 #define GPS_UART_TXD (GPIO_NUM_12)
 #define GPS_UART_RXD (GPIO_NUM_34)
@@ -66,28 +63,6 @@
  * N_OE is floating
  */
 
-// NOTE:
-// The LoRaWAN frequency and the radio chip must be configured by running 'make menuconfig'.
-// Go to Components / The Things Network, select the appropriate values and save.
-
-// Pins and other resources
-#define TTN_SPI_HOST      HSPI_HOST
-#define TTN_SPI_DMA_CHAN  2
-#define TTN_PIN_SPI_SCLK  LORA_SCK
-#define TTN_PIN_SPI_MOSI  LORA_MOSI
-#define TTN_PIN_SPI_MISO  LORA_MISO
-#define TTN_PIN_NSS       LORA_SS
-#define TTN_PIN_RXTX      TTN_NOT_CONNECTED
-#define TTN_PIN_RST       TTN_NOT_CONNECTED
-#define TTN_PIN_DIO0      LORA_DIO0
-#define TTN_PIN_DIO1      LORA_DIO1
-
-static TheThingsNetwork ttn;
-
-const unsigned TX_INTERVAL = 30;
-static uint8_t msgData[] = "Hello, world";
-
-
 #define BUF_SIZE (1024)
 
 const axp192_t axp = {
@@ -96,7 +71,6 @@ const axp192_t axp = {
 };
 uint8_t irqmask[5] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 uint8_t irqstatus[5] = { 0 };
-EventGroupHandle_t flags;
 
 static xQueueHandle gpio_evt_queue = NULL;
 
@@ -127,21 +101,6 @@ static void power_off()
 
 	for ( ;; ) {
 		// This function does not return
-	}
-}
-
-void sendMessages(void* pvParameter)
-{
-	while (1) {
-		// Flash LED
-		axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
-		printf("Sending message...\n");
-		TTNResponseCode res = ttn.transmitMessage(msgData, sizeof(msgData) - 1);
-		printf(res == kTTNSuccessfulTransmission ? "Message sent.\n" : "Transmission failed.\n");
-		vTaskDelay(1000 / portTICK_PERIOD_MS);
-		axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
-
-		vTaskDelay(TX_INTERVAL * 1000 / portTICK_PERIOD_MS);
 	}
 }
 
@@ -179,8 +138,6 @@ void setup_battery_charger() {
 extern "C" void app_main(void)
 {
 	printf("Hello world!\n");
-
-	flags = xEventGroupCreate();
 
 	i2c_init();
 
@@ -284,30 +241,6 @@ extern "C" void app_main(void)
 	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
 	gpio_config(&io_conf);
 
-	io_conf.intr_type = GPIO_INTR_DISABLE;
-	io_conf.pin_bit_mask = (1ULL << GPIO_NUM_25);
-	io_conf.mode = GPIO_MODE_OUTPUT;
-	io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-	gpio_config(&io_conf);
-
-	io_conf.intr_type = GPIO_INTR_DISABLE;
-	io_conf.pin_bit_mask = (1ULL << GPIO_NUM_36);
-	io_conf.mode = GPIO_MODE_INPUT;
-	io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-	gpio_config(&io_conf);
-
-	io_conf.intr_type = GPIO_INTR_DISABLE;
-	io_conf.pin_bit_mask = (1ULL << GPIO_NUM_39);
-	io_conf.mode = GPIO_MODE_INPUT;
-	io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-	gpio_config(&io_conf);
-
-	gpio_set_drive_capability(GPIO_NUM_25, GPIO_DRIVE_CAP_1);
-	gpio_set_level(GPIO_NUM_25, 1);
-
 	gpio_evt_queue = xQueueCreate(3, sizeof(uint32_t));
 
 	xTaskCreate(monitor_buttons, "monitor_buttons", 1024 * 4, (void* )0, 3, nullptr);
@@ -359,22 +292,12 @@ extern "C" void app_main(void)
 
 	int cnt = 0;
 	while(1) {
-		vTaskDelay(300 / portTICK_PERIOD_MS);
-		//printf("cnt: %d\n", cnt++);
-
-		/*
 		float charge_current, batt_voltage;
 		axp192_read(&axp, AXP192_CHARGE_CURRENT, &charge_current);
 		axp192_read(&axp, AXP192_BATTERY_VOLTAGE, &batt_voltage);
 
 		printf("Charge current: %1.2f A, Batt volts: %1.2f V\n", charge_current, batt_voltage);
-		*/
 
-		int val0 = adc1_get_raw(ADC1_CHANNEL_0);
-		int val1 = adc1_get_raw(ADC1_CHANNEL_1);
-		int val2 = adc1_get_raw(ADC1_CHANNEL_3);
-
-		printf("0: %5d 1: %5d 2: %5d\n", val0, val1, val2);
-
+		vTaskDelay(500 / portTICK_PERIOD_MS);
 	}
 }
