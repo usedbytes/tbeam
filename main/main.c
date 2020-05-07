@@ -18,10 +18,12 @@
 #include "esp_sleep.h"
 #include "esp_spi_flash.h"
 #include "esp_event.h"
+#include "esp_log.h"
 #include "nvs_flash.h"
 
 #include "i2c_helper.h"
 #include "axp192.h"
+#include "gps.h"
 
 #define GPS_UART_TXD (GPIO_NUM_12)
 #define GPS_UART_RXD (GPIO_NUM_34)
@@ -161,58 +163,6 @@ void app_main(void)
 	adc1_config_channel_atten(ADC1_CHANNEL_1, ADC_ATTEN_DB_11);
 	adc1_config_channel_atten(ADC1_CHANNEL_3, ADC_ATTEN_DB_11);
 
-	// Set the GPS voltage and power it up
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
-	axp192_set_rail_millivolts(&axp, AXP192_RAIL_LDO3, 3300);
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
-
-#if 0
-	printf("Power on LoRa\n");
-	axp192_set_rail_millivolts(&axp, LORA_VOLTAGE_RAIL, 3300);
-	axp192_set_rail_state(&axp, LORA_VOLTAGE_RAIL, true);
-	vTaskDelay(10 / portTICK_PERIOD_MS);
-
-	// Set the GPS voltage and power it up
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
-	axp192_set_rail_millivolts(&axp, AXP192_RAIL_LDO3, 3300);
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
-
-	/* Configure parameters of an UART driver,
-	 * communication pins and install the driver */
-	uart_config_t uart_config = {
-		.baud_rate = 9600,
-		.data_bits = UART_DATA_8_BITS,
-		.parity    = UART_PARITY_DISABLE,
-		.stop_bits = UART_STOP_BITS_1,
-		.flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-		.source_clk = UART_SCLK_APB,
-	};
-	uart_driver_install(UART_NUM_1, BUF_SIZE * 2, 0, 0, NULL, 0);
-	uart_param_config(UART_NUM_1, &uart_config);
-	uart_set_pin(UART_NUM_1, GPS_UART_TXD, GPS_UART_RXD, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-
-	// Configure a temporary buffer for the incoming data
-	uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
-
-	int i;
-	for (i = 0; i < 3000; i++) {
-		// Read data from the UART
-		int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 20 / portTICK_RATE_MS);
-		// Write data back to the UART
-		//uart_write_bytes(UART_NUM_1, (const char *) data, len);
-		fwrite(data, 1, len, stdout);
-		vTaskDelay(500 / portTICK_PERIOD_MS);
-		fflush(stdout);
-	}
-
-	printf("Sleeping...\n");
-	fflush(stdout);
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
-	esp_deep_sleep(5000000);
-#endif
-
-
-
 	// Clear all IRQs
 	axp192_read_irq_status(&axp, irqmask, irqstatus, true);
 	memset(irqstatus, 0, sizeof(irqstatus));
@@ -249,55 +199,123 @@ void app_main(void)
 	gpio_isr_handler_add(USER_BTN, gpio_isr_handler, (void*)USER_BTN);
 	gpio_isr_handler_add(PMIC_IRQ, gpio_isr_handler, (void*)PMIC_IRQ);
 
-#if 0
-	// Initialize the NVS (non-volatile storage) for saving and restoring the keys
-	esp_err_t err;
-	err = nvs_flash_init();
-	ESP_ERROR_CHECK(err);
 
-	// Initialize SPI bus
-	spi_bus_config_t spi_bus_config;
-	spi_bus_config.miso_io_num = TTN_PIN_SPI_MISO;
-	spi_bus_config.mosi_io_num = TTN_PIN_SPI_MOSI;
-	spi_bus_config.sclk_io_num = TTN_PIN_SPI_SCLK;
-	spi_bus_config.quadwp_io_num = -1;
-	spi_bus_config.quadhd_io_num = -1;
-	spi_bus_config.max_transfer_sz = 0;
-	spi_bus_config.flags = 0;
-	spi_bus_config.intr_flags = 0;
-	err = spi_bus_initialize(TTN_SPI_HOST, &spi_bus_config, TTN_SPI_DMA_CHAN);
-	ESP_ERROR_CHECK(err);
+	// Set the GPS voltage and power it up
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
+	axp192_set_rail_millivolts(&axp, AXP192_RAIL_LDO3, 3300);
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
 
-	// Configure the SX127x pins
-	ttn.configurePins(TTN_SPI_HOST, TTN_PIN_NSS, TTN_PIN_RXTX, TTN_PIN_RST, TTN_PIN_DIO0, TTN_PIN_DIO1);
+	struct gps_ctx *gps = gps_init();
 
-	// The below line can be commented after the first run as the data is saved in NVS
-	ttn.provision(devEui, appEui, appKey);
+	vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-	printf("Joining...\n");
-	// Flash LED
-	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
-	if (ttn.join())
-	{
-		printf("Joined.\n");
-		axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
-		xTaskCreate(sendMessages, "send_messages", 1024 * 4, (void* )0, 3, nullptr);
+	// Configure a temporary buffer for the incoming data
+	uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
+
+	struct ubx_message *msg;
+	uint8_t *p;
+	int i;
+
+	printf("Configure protocols...\n");
+	// TODO: Wrap this up in a send + get-ACK function
+	while (1) {
+		msg = alloc_msg(0x6, 0x00, 1);
+		msg->payload_csum[0] = 1;
+		send_message(gps, msg);
+		free(msg);
+		msg = NULL;
+
+		while (!msg) {
+			int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 100 / portTICK_RATE_MS);
+
+			if (!len) {
+				continue;
+			}
+			
+			p = data;
+			msg = receive_ubx(&p, len);
+		}
+
+		if (msg->class != 0x6 || msg->id != 0x0) {
+			free(msg);
+			continue;
+		}
+
+		msg->payload_csum[14] = 1;
+		send_message(gps, msg);
+		free(msg);
+		msg = NULL;
+
+		while (!msg) {
+			int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 100 / portTICK_RATE_MS);
+
+			if (!len) {
+				continue;
+			}
+			
+			p = data;
+			msg = receive_ubx(&p, len);
+		}
+
+		if (msg->class != 0x5 || msg->id != 0x1 || msg->payload_csum[0] != 0x6 || msg->payload_csum[1] != 0) {
+			free(msg);
+			continue;
+		}
+
+		free(msg);
+		msg = NULL;
+		break;
 	}
-	else
-	{
-		printf("Join failed. Goodbye\n");
-		axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x5a);
+
+	printf("Set message config...\n");
+	// TODO: Wrap this up in a send + get-ACK function
+	while (1) {
+		msg = alloc_msg(0x6, 0x01, 3);
+		msg->payload_csum[0] = 1;
+		msg->payload_csum[1] = 7;
+		msg->payload_csum[2] = 1;
+		send_message(gps, msg);
+		free(msg);
+		msg = NULL;
+
+		while (!msg) {
+			int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 100 / portTICK_RATE_MS);
+
+			if (!len) {
+				continue;
+			}
+			
+			p = data;
+			msg = receive_ubx(&p, len);
+		}
+
+		printf("Response:");
+		print_ubx(msg);
+		if (msg->class != 0x5 || msg->id != 0x1 || msg->payload_csum[0] != 0x6 || msg->payload_csum[1] != 1) {
+			free(msg);
+			continue;
+		}
+
+		free(msg);
+		msg = NULL;
+		break;
 	}
-#endif
 
-	int cnt = 0;
-	while(1) {
-		float charge_current, batt_voltage;
-		axp192_read(&axp, AXP192_CHARGE_CURRENT, &charge_current);
-		axp192_read(&axp, AXP192_BATTERY_VOLTAGE, &batt_voltage);
+	printf("Done...\n");
 
-		printf("Charge current: %1.2f A, Batt volts: %1.2f V\n", charge_current, batt_voltage);
+	for (i = 0; ; i++) {
+		int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 500 / portTICK_RATE_MS);
 
-		vTaskDelay(500 / portTICK_PERIOD_MS);
+		if (len) {
+			p = data;
+			msg = receive_ubx(&p, len);
+			if (msg) {
+				printf("Response:\n");
+				print_ubx(msg);
+			} else {
+				ESP_LOG_BUFFER_HEXDUMP("FOO", data, len, ESP_LOG_WARN);
+			}
+		}
+		fflush(stdout);
 	}
 }
