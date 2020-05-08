@@ -7,7 +7,6 @@
 
 #include "gps.h"
 
-
 static void rfc1145_checksum(uint8_t *data, uint16_t len, uint8_t *ck_a_out, uint8_t *ck_b_out)
 {
 	uint8_t ck_a = 0, ck_b = 0;
@@ -26,16 +25,16 @@ static void rfc1145_checksum(uint8_t *data, uint16_t len, uint8_t *ck_a_out, uin
 
 struct ubx_message *alloc_msg(uint8_t class, uint8_t id, uint16_t len)
 {
-	struct ubx_message *msg = (struct ubx_message *)malloc(6 + len + 2);
+	struct ubx_message *msg = (struct ubx_message *)malloc(sizeof(struct ubx_header) + len + 2);
 	if (msg == NULL) {
 		return NULL;
 	}
 
-	msg->sync[0] = 0xb5;
-	msg->sync[1] = 0x62;
-	msg->class = class;
-	msg->id = id;
-	msg->len = len;
+	msg->hdr.sync[0] = 0xb5;
+	msg->hdr.sync[1] = 0x62;
+	msg->hdr.class = class;
+	msg->hdr.id = id;
+	msg->hdr.len = len;
 
 	return msg;
 }
@@ -55,9 +54,7 @@ struct ubx_message *receive_ubx(uint8_t **data, size_t datalen)
 	} state = STATE_SYNC_1;
 
 	static struct {
-		uint8_t class;
-		uint8_t id;
-		uint16_t len;
+		struct ubx_header hdr;
 		uint16_t idx;
 		uint8_t ck_a, ck_b;
 		struct ubx_message *msg;
@@ -83,27 +80,27 @@ struct ubx_message *receive_ubx(uint8_t **data, size_t datalen)
 			datalen--;
 			break;
 		case STATE_CLASS:
-			ctx.class = *cur;
+			ctx.hdr.class = *cur;
 			state = STATE_ID;
 			cur++;
 			datalen--;
 			break;
 		case STATE_ID:
-			ctx.id = *cur;
+			ctx.hdr.id = *cur;
 			state = STATE_LEN_1;
 			cur++;
 			datalen--;
 			break;
 		case STATE_LEN_1:
-			ctx.len = *cur;
+			ctx.hdr.len = *cur;
 			state = STATE_LEN_2;
 			cur++;
 			datalen--;
 			break;
 		case STATE_LEN_2:
-			ctx.len |= (*cur << 8);
+			ctx.hdr.len |= (*cur << 8);
 			state = STATE_PAYLOAD;
-			ctx.msg = alloc_msg(ctx.class, ctx.id, ctx.len);
+			ctx.msg = alloc_msg(ctx.hdr.class, ctx.hdr.id, ctx.hdr.len);
 			if (ctx.msg == NULL) {
 				state = STATE_SYNC_1;
 
@@ -116,11 +113,11 @@ struct ubx_message *receive_ubx(uint8_t **data, size_t datalen)
 			break;
 		case STATE_PAYLOAD:
 		{
-			int len = datalen < ctx.len ? datalen : ctx.len;
+			int len = datalen < ctx.hdr.len ? datalen : ctx.hdr.len;
 			memcpy(&ctx.msg->payload_csum[ctx.idx], cur, len);
-			ctx.len -= len;
-			if (ctx.len == 0) {
-				rfc1145_checksum(&ctx.msg->class, ctx.msg->len + 4, &ctx.ck_a, &ctx.ck_b);
+			ctx.hdr.len -= len;
+			if (ctx.hdr.len == 0) {
+				rfc1145_checksum(&ctx.msg->hdr.class, ctx.msg->hdr.len + 4, &ctx.ck_a, &ctx.ck_b);
 				state = STATE_CK_A;
 			}
 			cur += len;
@@ -168,11 +165,11 @@ struct ubx_message *receive_ubx(uint8_t **data, size_t datalen)
 void print_ubx(struct ubx_message *msg)
 {
 	uint16_t i;
-	printf("Class: 0x%02x\n", msg->class);
-	printf("ID:    0x%02x\n", msg->id);
-	printf("Len:   %d\n", msg->len);
-	printf("Ck:    0x%02x 0x%02x\n", msg->payload_csum[msg->len], msg->payload_csum[msg->len + 1]);
-	for (i = 0; i < msg->len; i++) {
+	printf("Class: 0x%02x\n", msg->hdr.class);
+	printf("ID:    0x%02x\n", msg->hdr.id);
+	printf("Len:   %d\n", msg->hdr.len);
+	printf("Ck:    0x%02x 0x%02x\n", msg->payload_csum[msg->hdr.len], msg->payload_csum[msg->hdr.len + 1]);
+	for (i = 0; i < msg->hdr.len; i++) {
 		if (!(i % 16)) {
 			if (i > 0) {
 				printf("\n");
@@ -207,12 +204,28 @@ struct gps_ctx *gps_init(void)
 	return &gps;
 }
 
+static void calc_message_checksum(struct ubx_message *msg)
+{
+	rfc1145_checksum(&msg->hdr.class, msg->hdr.len + 4, &msg->payload_csum[msg->hdr.len], &msg->payload_csum[msg->hdr.len + 1]);
+}
+
 void send_message(struct gps_ctx *gps, struct ubx_message *msg)
 {
-	rfc1145_checksum(&msg->class, msg->len + 4, &msg->payload_csum[msg->len], &msg->payload_csum[msg->len + 1]);
+	calc_message_checksum(msg);
+	uart_write_bytes(UART_NUM_1, (const char *)msg, msg->hdr.len + 6 + 2);
+}
 
-	printf("Sending:\n");
-	print_ubx(msg);
+int32_t ubx_deg_to_semicircles(int32_t deg)
+{
+#define SEMI_s31_32_FACTOR ((int64_t)(((1ULL << 63) * 1e-7) / 180))
+	// Messy casting to ensure right-shift is defined.
+	return ((uint64_t)((int64_t)deg * SEMI_s31_32_FACTOR)) >> 32;
+}
 
-	uart_write_bytes(UART_NUM_1, (const char *)msg, msg->len + 6 + 2);
+void print_ubx_nav_pvt(struct ubx_nav_pvt *pvt)
+{
+	printf("%04d-%02d-%02d %02d:%02d:%02d\n", pvt->year, pvt->month, pvt->day, pvt->hour, pvt->min, pvt->sec);
+	printf("Lon: %f Lat: %f\n", (float)pvt->lon * 1e-7, (float)pvt->lat * 1e-7);
+	printf("hAcc: %d vAcc: %d gSpeed: %d\n", pvt->hAcc, pvt->vAcc, pvt->gSpeed);
+	printf("fixType: %d fixOK: %d invalid: %d\n", pvt->fixType, pvt->flags & 1, pvt->flags3 & 1);
 }

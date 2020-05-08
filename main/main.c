@@ -231,12 +231,12 @@ void app_main(void)
 			if (!len) {
 				continue;
 			}
-			
+
 			p = data;
 			msg = receive_ubx(&p, len);
 		}
 
-		if (msg->class != 0x6 || msg->id != 0x0) {
+		if (msg->hdr.class != 0x6 || msg->hdr.id != 0x0) {
 			free(msg);
 			continue;
 		}
@@ -252,12 +252,12 @@ void app_main(void)
 			if (!len) {
 				continue;
 			}
-			
+
 			p = data;
 			msg = receive_ubx(&p, len);
 		}
 
-		if (msg->class != 0x5 || msg->id != 0x1 || msg->payload_csum[0] != 0x6 || msg->payload_csum[1] != 0) {
+		if (msg->hdr.class != 0x5 || msg->hdr.id != 0x1 || msg->payload_csum[0] != 0x6 || msg->payload_csum[1] != 0) {
 			free(msg);
 			continue;
 		}
@@ -284,14 +284,14 @@ void app_main(void)
 			if (!len) {
 				continue;
 			}
-			
+
 			p = data;
 			msg = receive_ubx(&p, len);
 		}
 
 		printf("Response:");
 		print_ubx(msg);
-		if (msg->class != 0x5 || msg->id != 0x1 || msg->payload_csum[0] != 0x6 || msg->payload_csum[1] != 1) {
+		if (msg->hdr.class != 0x5 || msg->hdr.id != 0x1 || msg->payload_csum[0] != 0x6 || msg->payload_csum[1] != 1) {
 			free(msg);
 			continue;
 		}
@@ -310,8 +310,7 @@ void app_main(void)
 			p = data;
 			msg = receive_ubx(&p, len);
 			if (msg) {
-				printf("Response:\n");
-				print_ubx(msg);
+				print_ubx_nav_pvt((struct ubx_nav_pvt *)msg);
 			} else {
 				ESP_LOG_BUFFER_HEXDUMP("FOO", data, len, ESP_LOG_WARN);
 			}
