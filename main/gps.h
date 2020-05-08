@@ -80,4 +80,6 @@ struct ubx_message *ubx_send_get_response(struct gps_ctx *gps, struct ubx_messag
 int ubx_send_get_ack(struct gps_ctx *gps, struct ubx_message *msg, TickType_t timeout);
 void send_message(struct gps_ctx *gps, struct ubx_message *msg);
 
+int32_t ubx_deg_to_semicircles(int32_t deg);
+
 #endif /* __GPS_H__ */

@@ -6,10 +6,22 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
+
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+
+#include "lwip/err.h"
+#include "lwip/sockets.h"
+#include "lwip/sys.h"
+#include "lwip/netdb.h"
+#include "lwip/dns.h"
 
 #include "driver/gpio.h"
 #include "driver/uart.h"
@@ -17,6 +29,7 @@
 #include "esp_system.h"
 #include "esp_sleep.h"
 #include "esp_spi_flash.h"
+#include "esp_spiffs.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
@@ -24,6 +37,8 @@
 #include "i2c_helper.h"
 #include "axp192.h"
 #include "gps.h"
+
+#define TAG "FOO"
 
 #define GPS_UART_TXD (GPIO_NUM_12)
 #define GPS_UART_RXD (GPIO_NUM_34)
@@ -75,6 +90,7 @@ uint8_t irqmask[5] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 uint8_t irqstatus[5] = { 0 };
 
 static xQueueHandle gpio_evt_queue = NULL;
+static EventGroupHandle_t exit_flags;
 
 static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
@@ -120,7 +136,7 @@ void monitor_buttons(void *pvParameter)
 					if (irqstatus[2] & (1 << 1)) {
 						printf("Power button pressed.\n");
 
-						power_off();
+						xEventGroupSetBits(exit_flags, 1);
 					}
 					break;
 				default:
@@ -137,9 +153,143 @@ void setup_battery_charger() {
 	axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_2, 0x41);
 }
 
+#define WEB_SERVER "192.168.0.253"
+#define WEB_PORT "8000"
+#define WEB_PATH "/"
+
+static const char *REQUEST_F = "PUT %s HTTP/1.0\r\n"
+    "Host: "WEB_SERVER":"WEB_PORT"\r\n"
+    "User-Agent: esp-idf/1.0 esp32\r\n"
+    "Content-type: application/octet-stream\r\n"
+    "Content-length: %lld\r\n"
+    "\r\n";
+
+int upload(char *filename, size_t size)
+{
+	const struct addrinfo hints = {
+		.ai_family = AF_INET,
+		.ai_socktype = SOCK_STREAM,
+	};
+	struct addrinfo *res;
+	struct in_addr *addr;
+	int s, r;
+	char recv_buf[64];
+
+	int err = getaddrinfo(WEB_SERVER, WEB_PORT, &hints, &res);
+
+	if(err != 0 || res == NULL) {
+		ESP_LOGE(TAG, "DNS lookup failed err=%d res=%p", err, res);
+		return -1;
+	}
+
+	addr = &((struct sockaddr_in *)res->ai_addr)->sin_addr;
+	ESP_LOGI(TAG, "DNS lookup succeeded. IP=%s", inet_ntoa(*addr));
+
+	s = socket(res->ai_family, res->ai_socktype, 0);
+	if(s < 0) {
+		ESP_LOGE(TAG, "... Failed to allocate socket.");
+		freeaddrinfo(res);
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
+		return -1;
+	}
+	ESP_LOGI(TAG, "... allocated socket");
+
+	if(connect(s, res->ai_addr, res->ai_addrlen) != 0) {
+		ESP_LOGE(TAG, "... socket connect failed errno=%d", errno);
+		close(s);
+		freeaddrinfo(res);
+		return -1;
+	}
+
+	ESP_LOGI(TAG, "... connected");
+	freeaddrinfo(res);
+
+	struct timeval receiving_timeout;
+	receiving_timeout.tv_sec = 5;
+	receiving_timeout.tv_usec = 0;
+	if (setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &receiving_timeout,
+				sizeof(receiving_timeout)) < 0) {
+		ESP_LOGE(TAG, "... failed to set socket receiving timeout");
+		close(s);
+		return -1;
+	}
+	ESP_LOGI(TAG, "... set socket receiving timeout success");
+
+	FILE *fs = fdopen(s, "w+");
+
+	r = fprintf(fs, REQUEST_F, filename, (long long int)size);
+	if (r < 0) {
+		ESP_LOGE(TAG, "... socket send failed");
+		fclose(fs);
+		return -1;
+	}
+
+	FILE *fi = fopen(filename, "r");
+
+	do {
+		r = fread(recv_buf, 1, sizeof(recv_buf), fi);
+		if (r > 0) {
+			r = fwrite(recv_buf, 1, r, fs);
+		}
+	} while (r > 0);
+	fclose(fi);
+
+	ESP_LOGI(TAG, "... socket send success");
+
+	/* Read HTTP response */
+	do {
+		bzero(recv_buf, sizeof(recv_buf));
+		r = fread(recv_buf, 1, sizeof(recv_buf)-1, fs);
+		for(int i = 0; i < r; i++) {
+			putchar(recv_buf[i]);
+		}
+	} while(r > 0);
+
+	ESP_LOGI(TAG, "... done reading from socket. Last read return=%d errno=%d.", r, errno);
+	fclose(fs);
+
+	return 0;
+}
+
+void send_files()
+{
+	DIR *dir = opendir("/spiffs");
+	struct dirent *ent;
+	struct stat st;
+	int ret;
+
+	while ((ent = readdir(dir))) {
+		char filename[290];
+		snprintf(filename, 290, "/spiffs/%s", ent->d_name);
+		stat(filename, &st);
+		printf("Entry: %s %ld\n", filename, st.st_size);
+
+		ret = upload(filename, st.st_size);
+		if (!ret) {
+			unlink(filename);
+		}
+	}
+
+	closedir(dir);
+}
+
+struct pvt_record {
+	uint32_t timestamp;
+	int32_t lon_semis;
+	int32_t lat_semis;
+	uint32_t acc;
+};
+
+extern int wifi_init_sta(void);
+extern void wifi_stop(void);
+
 void app_main(void)
 {
+	int i, ret;
+
 	printf("Hello world!\n");
+
+	exit_flags = xEventGroupCreate();
 
 	i2c_init();
 
@@ -199,6 +349,55 @@ void app_main(void)
 	gpio_isr_handler_add(USER_BTN, gpio_isr_handler, (void*)USER_BTN);
 	gpio_isr_handler_add(PMIC_IRQ, gpio_isr_handler, (void*)PMIC_IRQ);
 
+	ESP_LOGI(TAG, "Initializing SPIFFS");
+
+	esp_vfs_spiffs_conf_t spiffsconf = {
+		.base_path = "/spiffs",
+		.partition_label = NULL,
+		.max_files = 5,
+		.format_if_mount_failed = true
+	};
+
+	// Use settings defined above to initialize and mount SPIFFS filesystem.
+	// Note: esp_vfs_spiffs_register is an all-in-one convenience function.
+	esp_err_t err = esp_vfs_spiffs_register(&spiffsconf);
+
+	if (err != ESP_OK) {
+		if (err == ESP_FAIL) {
+			ESP_LOGE(TAG, "Failed to mount or format filesystem");
+		} else if (err == ESP_ERR_NOT_FOUND) {
+			ESP_LOGE(TAG, "Failed to find SPIFFS partition");
+		} else {
+			ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(err));
+		}
+		return;
+	}
+
+	size_t total = 0, used = 0;
+	err = esp_spiffs_info(spiffsconf.partition_label, &total, &used);
+	if (err != ESP_OK) {
+		ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s)", esp_err_to_name(err));
+	} else {
+		ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
+	}
+
+
+	// Try and upload files
+
+	//Initialize NVS
+	err = nvs_flash_init();
+	if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+		ESP_ERROR_CHECK(nvs_flash_erase());
+		err = nvs_flash_init();
+	}
+	ESP_ERROR_CHECK(err);
+
+	ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
+	ret = wifi_init_sta();
+	if (ret == 0) {
+		send_files();
+	}
+	wifi_stop();
 
 	// Set the GPS voltage and power it up
 	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
@@ -214,7 +413,6 @@ void app_main(void)
 
 	struct ubx_message *msg, *resp;
 	uint8_t *p;
-	int i, ret;
 
 	printf("Configure protocols...\n");
 	msg = alloc_msg(0x6, 0x00, 1);
@@ -261,7 +459,9 @@ void app_main(void)
 	bool locked = false;
 	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
 
-	for (i = 0; ; i++) {
+	FILE *f = NULL;
+
+	for (i = 0; !xEventGroupGetBits(exit_flags); i++) {
 		int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 500 / portTICK_RATE_MS);
 
 		if (len) {
@@ -269,15 +469,41 @@ void app_main(void)
 			msg = receive_ubx(&p, len);
 			if (msg) {
 				struct ubx_nav_pvt *pvt = (struct ubx_nav_pvt *)msg;
+
+				struct pvt_record rec = {
+					.timestamp = pvt->day * 24 * 3600 + pvt->hour * 3600 + pvt->min * 60 + pvt->sec,
+					.lon_semis = ubx_deg_to_semicircles(pvt->lon),
+					.lat_semis = ubx_deg_to_semicircles(pvt->lat),
+					.acc = pvt->hAcc,
+				};
+
 				if (!locked && (pvt->flags & 1)) {
 					locked = true;
 					// Stop flashing
 					axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
+
+					if (f == NULL) {
+						char filename[128];
+						snprintf(filename, 128, "/spiffs/%d.bin", rec.timestamp);
+						f = fopen(filename, "w");
+					}
 				} else if (locked && !(pvt->flags & 1)) {
 					// Start flashing
 					locked = false;
 					axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
 				}
+
+				if (f != NULL) {
+					struct timeval start, end;
+					gettimeofday(&start, NULL);
+					fwrite(&rec, sizeof(rec), 1, f);
+					gettimeofday(&end, NULL);
+
+					int64_t us = ((int64_t)end.tv_sec * 1000000L + (int64_t)end.tv_usec) -
+					             ((int64_t)start.tv_sec * 1000000L + (int64_t)start.tv_usec);
+					printf("Flash write took %lld us\n", us);
+				}
+
 				print_ubx_nav_pvt((struct ubx_nav_pvt *)msg);
 			} else {
 				ESP_LOG_BUFFER_HEXDUMP("FOO", data, len, ESP_LOG_WARN);
@@ -285,4 +511,13 @@ void app_main(void)
 		}
 		fflush(stdout);
 	}
+
+	if (f != NULL) {
+		fflush(f);
+		fclose(f);
+	}
+
+	esp_vfs_spiffs_unregister(spiffsconf.partition_label);
+
+	power_off();
 }
