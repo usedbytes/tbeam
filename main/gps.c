@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2020 Brian Starkey <stark3y@gmail.com>
 
+#include <errno.h>
 #include <string.h>
 
 #include <driver/gpio.h>
@@ -194,7 +195,7 @@ struct gps_ctx *gps_init(void)
 		.flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
 		.source_clk = UART_SCLK_APB,
 	};
-	uart_driver_install(UART_NUM_1, 1024, 0, 0, NULL, 0);
+	uart_driver_install(UART_NUM_1, 256, 0, 0, NULL, 0);
 	uart_param_config(UART_NUM_1, &uart_config);
 	uart_set_pin(UART_NUM_1, GPIO_NUM_12, GPIO_NUM_34,
 		     UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
@@ -228,4 +229,66 @@ void print_ubx_nav_pvt(struct ubx_nav_pvt *pvt)
 	printf("Lon: %f Lat: %f\n", (float)pvt->lon * 1e-7, (float)pvt->lat * 1e-7);
 	printf("hAcc: %d vAcc: %d gSpeed: %d\n", pvt->hAcc, pvt->vAcc, pvt->gSpeed);
 	printf("fixType: %d fixOK: %d invalid: %d\n", pvt->fixType, pvt->flags & 1, pvt->flags3 & 1);
+}
+
+int ubx_send_get_ack(struct gps_ctx *gps, struct ubx_message *msg, TickType_t timeout)
+{
+	uint8_t *p;
+	int ret = -EINVAL;
+	struct ubx_message *resp = NULL;
+
+	send_message(gps, msg);
+
+	TickType_t start = xTaskGetTickCount();
+	while (!resp && ((xTaskGetTickCount() - start) < timeout)) {
+		int len = uart_read_bytes(UART_NUM_1, gps->buf, sizeof(gps->buf), 100 / portTICK_RATE_MS);
+		if (!len) {
+			continue;
+		}
+
+		p = gps->buf;
+		resp = receive_ubx(&p, len);
+	}
+
+	if (!resp) {
+		return -ETIMEDOUT;
+	}
+
+	if (resp->hdr.class == 0x5 &&
+	    resp->hdr.id == 0x1 &&
+	    resp->payload_csum[0] == msg->hdr.class &&
+	    resp->payload_csum[1] == msg->hdr.id) {
+		ret = 0;
+	}
+
+	free(resp);
+	return ret;
+}
+
+struct ubx_message *ubx_send_get_response(struct gps_ctx *gps, struct ubx_message *msg, TickType_t timeout)
+{
+	uint8_t *p;
+	struct ubx_message *resp = NULL;
+
+	send_message(gps, msg);
+
+	TickType_t start = xTaskGetTickCount();
+	while (!resp && ((xTaskGetTickCount() - start) < timeout)) {
+		int len = uart_read_bytes(UART_NUM_1, gps->buf, sizeof(gps->buf), 100 / portTICK_RATE_MS);
+		if (!len) {
+			continue;
+		}
+
+		p = gps->buf;
+		resp = receive_ubx(&p, len);
+	}
+
+	if (resp &&
+	    resp->hdr.class == msg->hdr.class &&
+	    resp->hdr.id == msg->hdr.id) {
+		return resp;
+	}
+
+	free(resp);
+	return NULL;
 }

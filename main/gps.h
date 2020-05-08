@@ -9,6 +9,7 @@
 
 struct gps_ctx {
 	uart_port_t uart;
+	uint8_t buf[128];
 };
 
 struct ubx_header {
@@ -75,6 +76,8 @@ void print_ubx_nav_pvt(struct ubx_nav_pvt *pvt);
 struct ubx_message *receive_ubx(uint8_t **data, size_t datalen);
 struct ubx_message *alloc_msg(uint8_t class, uint8_t id, uint16_t len);
 
+struct ubx_message *ubx_send_get_response(struct gps_ctx *gps, struct ubx_message *msg, TickType_t timeout);
+int ubx_send_get_ack(struct gps_ctx *gps, struct ubx_message *msg, TickType_t timeout);
 void send_message(struct gps_ctx *gps, struct ubx_message *msg);
 
 #endif /* __GPS_H__ */

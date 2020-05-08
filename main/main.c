@@ -212,96 +212,54 @@ void app_main(void)
 	// Configure a temporary buffer for the incoming data
 	uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
 
-	struct ubx_message *msg;
+	struct ubx_message *msg, *resp;
 	uint8_t *p;
-	int i;
+	int i, ret;
 
 	printf("Configure protocols...\n");
-	// TODO: Wrap this up in a send + get-ACK function
+	msg = alloc_msg(0x6, 0x00, 1);
+	msg->payload_csum[0] = 1;
 	while (1) {
-		msg = alloc_msg(0x6, 0x00, 1);
-		msg->payload_csum[0] = 1;
-		send_message(gps, msg);
-		free(msg);
-		msg = NULL;
-
-		while (!msg) {
-			int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 100 / portTICK_RATE_MS);
-
-			if (!len) {
-				continue;
-			}
-
-			p = data;
-			msg = receive_ubx(&p, len);
+		resp = ubx_send_get_response(gps, msg, 1000 / portTICK_RATE_MS);
+		if (resp) {
+			break;
 		}
+		printf("Retry...\n");
+	}
+	free(msg);
+	msg = resp;
+	resp = NULL;
 
-		if (msg->hdr.class != 0x6 || msg->hdr.id != 0x0) {
-			free(msg);
-			continue;
+	msg->payload_csum[14] = 1;
+	while (1) {
+		ret = ubx_send_get_ack(gps, msg, 1000 / portTICK_RATE_MS);
+		if (!ret) {
+			break;
+		} else if (ret != -ETIMEDOUT) {
+			printf("Unexpected error setting config.\n");
 		}
-
-		msg->payload_csum[14] = 1;
-		send_message(gps, msg);
-		free(msg);
-		msg = NULL;
-
-		while (!msg) {
-			int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 100 / portTICK_RATE_MS);
-
-			if (!len) {
-				continue;
-			}
-
-			p = data;
-			msg = receive_ubx(&p, len);
-		}
-
-		if (msg->hdr.class != 0x5 || msg->hdr.id != 0x1 || msg->payload_csum[0] != 0x6 || msg->payload_csum[1] != 0) {
-			free(msg);
-			continue;
-		}
-
-		free(msg);
-		msg = NULL;
-		break;
+		printf("Retry...\n");
 	}
 
 	printf("Set message config...\n");
-	// TODO: Wrap this up in a send + get-ACK function
+	msg = alloc_msg(0x6, 0x01, 3);
+	msg->payload_csum[0] = 1;
+	msg->payload_csum[1] = 7;
+	msg->payload_csum[2] = 1;
 	while (1) {
-		msg = alloc_msg(0x6, 0x01, 3);
-		msg->payload_csum[0] = 1;
-		msg->payload_csum[1] = 7;
-		msg->payload_csum[2] = 1;
-		send_message(gps, msg);
-		free(msg);
-		msg = NULL;
-
-		while (!msg) {
-			int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 100 / portTICK_RATE_MS);
-
-			if (!len) {
-				continue;
-			}
-
-			p = data;
-			msg = receive_ubx(&p, len);
+		ret = ubx_send_get_ack(gps, msg, 1000 / portTICK_RATE_MS);
+		if (!ret) {
+			break;
+		} else if (ret != -ETIMEDOUT) {
+			printf("Unexpected error setting config.\n");
 		}
-
-		printf("Response:");
-		print_ubx(msg);
-		if (msg->hdr.class != 0x5 || msg->hdr.id != 0x1 || msg->payload_csum[0] != 0x6 || msg->payload_csum[1] != 1) {
-			free(msg);
-			continue;
-		}
-
-		free(msg);
-		msg = NULL;
-		break;
+		printf("Retry...\n");
 	}
-
+	free(msg);
 	printf("Done...\n");
+
+	bool locked = false;
+	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
 
 	for (i = 0; ; i++) {
 		int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 500 / portTICK_RATE_MS);
@@ -310,6 +268,16 @@ void app_main(void)
 			p = data;
 			msg = receive_ubx(&p, len);
 			if (msg) {
+				struct ubx_nav_pvt *pvt = (struct ubx_nav_pvt *)msg;
+				if (!locked && (pvt->flags & 1)) {
+					locked = true;
+					// Stop flashing
+					axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
+				} else if (locked && !(pvt->flags & 1)) {
+					// Start flashing
+					locked = false;
+					axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+				}
 				print_ubx_nav_pvt((struct ubx_nav_pvt *)msg);
 			} else {
 				ESP_LOG_BUFFER_HEXDUMP("FOO", data, len, ESP_LOG_WARN);
