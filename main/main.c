@@ -99,10 +99,31 @@ static void IRAM_ATTR gpio_isr_handler(void* arg)
 	xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
 }
 
+// These match the register definition.
+enum led_mode {
+	// Switch to charger-controlled LED
+	LED_MODE_AUTO = 0,
+	LED_MODE_MANUAL_OFF = 1,
+	LED_MODE_MANUAL_1HZ = 3,
+	LED_MODE_MANUAL_4HZ = 5,
+	LED_MODE_MANUAL_ON = 7,
+};
+
+static void set_chgled(enum led_mode mode)
+{
+	uint8_t val;
+	axp192_read_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, &val);
+
+	val &= ~(7 << 3);
+	val |= (mode << 3);
+
+	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, val);
+}
+
 static void power_off()
 {
 	// Flash LED
-	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+	set_chgled(LED_MODE_MANUAL_4HZ);
 
 	// Save whatever state needs saving...
 
@@ -298,9 +319,8 @@ void app_main(void)
 	setup_battery_charger();
 
 	// Flash LED
-	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+	set_chgled(LED_MODE_MANUAL_4HZ);
 	vTaskDelay(500 / portTICK_PERIOD_MS);
-	//axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
 
 	// Power off everything we don't need
 	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
@@ -457,7 +477,7 @@ void app_main(void)
 	printf("Done...\n");
 
 	bool locked = false;
-	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+	set_chgled(LED_MODE_MANUAL_4HZ);
 
 	FILE *f = NULL;
 
@@ -478,7 +498,7 @@ void app_main(void)
 			if (!locked && (pvt->flags & 1)) {
 				locked = true;
 				// Stop flashing
-				axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
+				set_chgled(LED_MODE_MANUAL_OFF);
 
 				if (f == NULL) {
 					char filename[128];
@@ -488,7 +508,7 @@ void app_main(void)
 			} else if (locked && !(pvt->flags & 1)) {
 				// Start flashing
 				locked = false;
-				axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+				set_chgled(LED_MODE_MANUAL_4HZ);
 			}
 
 			if (f != NULL) {
