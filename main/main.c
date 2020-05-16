@@ -65,6 +65,8 @@
 #define GPS_VOLTAGE_RAIL    AXP192_RAIL_LDO3
 #define LORA_VOLTAGE_RAIL   AXP192_RAIL_LDO2
 
+#define SPIFFS_MOUNT_POINT "/spiffs"
+
 /*
  * GPS is on:  LDO3 (3v3)
  * LoRa is on: LDO2 (3v3)
@@ -275,14 +277,14 @@ int upload(char *filename, size_t size)
 
 void send_files()
 {
-	DIR *dir = opendir("/spiffs");
+	DIR *dir = opendir(SPIFFS_MOUNT_POINT);
 	struct dirent *ent;
 	struct stat st;
 	int ret;
 
 	while ((ent = readdir(dir))) {
 		char filename[290];
-		snprintf(filename, 290, "/spiffs/%s", ent->d_name);
+		snprintf(filename, 290, "%s/%s", SPIFFS_MOUNT_POINT, ent->d_name);
 		stat(filename, &st);
 		printf("Entry: %s %ld\n", filename, st.st_size);
 
@@ -295,46 +297,19 @@ void send_files()
 	closedir(dir);
 }
 
-struct pvt_record {
-	uint32_t timestamp;
-	int32_t lon_semis;
-	int32_t lat_semis;
-	uint32_t acc;
-};
-
-extern int wifi_init_sta(void);
-extern void wifi_stop(void);
-
-void app_main(void)
+static void setup_adc()
 {
-	int i, ret;
-
-	printf("Hello world!\n");
-
-	exit_flags = xEventGroupCreate();
-
-	i2c_init();
-
-	axp192_init(&axp);
-	setup_battery_charger();
-
-	// Flash LED
-	set_chgled(LED_MODE_MANUAL_4HZ);
-	vTaskDelay(500 / portTICK_PERIOD_MS);
-
-	// Power off everything we don't need
-	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
-	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC2, false);
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, false);
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
-	axp192_set_rail_state(&axp, AXP192_RAIL_EXTEN, false);
-
 	adc1_config_width(ADC_WIDTH_BIT_12);
 	adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_DB_11);
 	adc1_config_channel_atten(ADC1_CHANNEL_1, ADC_ATTEN_DB_11);
 	adc1_config_channel_atten(ADC1_CHANNEL_3, ADC_ATTEN_DB_11);
+}
 
-	// Clear all IRQs
+static void setup_buttons()
+{
+	gpio_config_t io_conf;
+
+	// Clear all PMIC IRQs
 	axp192_read_irq_status(&axp, irqmask, irqstatus, true);
 	memset(irqstatus, 0, sizeof(irqstatus));
 
@@ -345,8 +320,6 @@ void app_main(void)
 	irqmask[3] = 0;
 	irqmask[4] = 0;
 	axp192_write_irq_mask(&axp, irqmask);
-
-	gpio_config_t io_conf;
 
 	io_conf.intr_type = GPIO_INTR_NEGEDGE;
 	io_conf.pin_bit_mask = (1ULL << USER_BTN);
@@ -369,41 +342,62 @@ void app_main(void)
 	gpio_install_isr_service(0);
 	gpio_isr_handler_add(USER_BTN, gpio_isr_handler, (void*)USER_BTN);
 	gpio_isr_handler_add(PMIC_IRQ, gpio_isr_handler, (void*)PMIC_IRQ);
+}
 
-	ESP_LOGI(TAG, "Initializing SPIFFS");
+static void cycle_gps_power(bool on)
+{
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
+	axp192_set_rail_millivolts(&axp, AXP192_RAIL_LDO3, 3300);
+
+	if (on) {
+		axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
+	}
+}
+
+struct pvt_record {
+	uint32_t timestamp;
+	int32_t lon_semis;
+	int32_t lat_semis;
+	uint32_t acc;
+};
+
+extern int wifi_init_sta(void);
+extern void wifi_stop(void);
+
+void app_main(void)
+{
+	int i, ret;
+	esp_err_t err;
+
+	printf("Hello world!\n");
+
+	exit_flags = xEventGroupCreate();
+
+	i2c_init();
+
+	axp192_init(&axp);
+	setup_battery_charger();
+
+	// Flash LED
+	set_chgled(LED_MODE_MANUAL_4HZ);
+
+	// Power off everything we don't need
+	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
+	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC2, false);
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, false);
+	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
+	axp192_set_rail_state(&axp, AXP192_RAIL_EXTEN, false);
+
+	setup_buttons();
 
 	esp_vfs_spiffs_conf_t spiffsconf = {
-		.base_path = "/spiffs",
+		.base_path = SPIFFS_MOUNT_POINT,
 		.partition_label = NULL,
 		.max_files = 5,
 		.format_if_mount_failed = true
 	};
-
-	// Use settings defined above to initialize and mount SPIFFS filesystem.
-	// Note: esp_vfs_spiffs_register is an all-in-one convenience function.
-	esp_err_t err = esp_vfs_spiffs_register(&spiffsconf);
-
-	if (err != ESP_OK) {
-		if (err == ESP_FAIL) {
-			ESP_LOGE(TAG, "Failed to mount or format filesystem");
-		} else if (err == ESP_ERR_NOT_FOUND) {
-			ESP_LOGE(TAG, "Failed to find SPIFFS partition");
-		} else {
-			ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(err));
-		}
-		return;
-	}
-
-	size_t total = 0, used = 0;
-	err = esp_spiffs_info(spiffsconf.partition_label, &total, &used);
-	if (err != ESP_OK) {
-		ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s)", esp_err_to_name(err));
-	} else {
-		ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
-	}
-
-
-	// Try and upload files
+	err = esp_vfs_spiffs_register(&spiffsconf);
+	ESP_ERROR_CHECK(err);
 
 	//Initialize NVS
 	err = nvs_flash_init();
@@ -413,25 +407,21 @@ void app_main(void)
 	}
 	ESP_ERROR_CHECK(err);
 
-	ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
+	// Try and upload files
 	ret = wifi_init_sta();
 	if (ret == 0) {
 		send_files();
 	}
 	wifi_stop();
 
-	// Set the GPS voltage and power it up
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
-	axp192_set_rail_millivolts(&axp, AXP192_RAIL_LDO3, 3300);
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
+
+	cycle_gps_power(true);
 
 	struct gps_ctx *gps = gps_init();
 
 	vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-	// Configure a temporary buffer for the incoming data
 	uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
-
 	struct ubx_message *msg, *resp;
 
 	printf("Configure protocols...\n");
@@ -502,7 +492,7 @@ void app_main(void)
 
 				if (f == NULL) {
 					char filename[128];
-					snprintf(filename, 128, "/spiffs/%d.bin", rec.timestamp);
+					snprintf(filename, 128, "%s/%d.bin", SPIFFS_MOUNT_POINT, rec.timestamp);
 					//f = fopen(filename, "w");
 				}
 			} else if (locked && !(pvt->flags & 1)) {
