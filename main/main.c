@@ -37,6 +37,7 @@
 #include "i2c_helper.h"
 #include "axp192.h"
 #include "gps.h"
+#include "ubx.h"
 
 #define TAG "FOO"
 
@@ -414,22 +415,22 @@ void app_main(void)
 	struct ubx_message *msg, *resp;
 
 	printf("Configure protocols...\n");
-	msg = alloc_msg(0x6, 0x00, 1);
+	msg = ubx_alloc(0x6, 0x00, 1);
 	msg->payload_csum[0] = 1;
 	while (1) {
-		resp = ubx_send_get_response(gps, msg, 1000 / portTICK_RATE_MS);
+		resp = gps_send_get_response(gps, msg, 1000 / portTICK_RATE_MS);
 		if (resp) {
 			break;
 		}
 		printf("Retry...\n");
 	}
-	free(msg);
+	ubx_free(msg);
 	msg = resp;
 	resp = NULL;
 
 	msg->payload_csum[14] = 1;
 	while (1) {
-		ret = ubx_send_get_ack(gps, msg, 1000 / portTICK_RATE_MS);
+		ret = gps_send_get_ack(gps, msg, 1000 / portTICK_RATE_MS);
 		if (!ret) {
 			break;
 		} else if (ret != -ETIMEDOUT) {
@@ -439,12 +440,12 @@ void app_main(void)
 	}
 
 	printf("Set message config...\n");
-	msg = alloc_msg(0x6, 0x01, 3);
+	msg = ubx_alloc(0x6, 0x01, 3);
 	msg->payload_csum[0] = 1;
 	msg->payload_csum[1] = 7;
 	msg->payload_csum[2] = 1;
 	while (1) {
-		ret = ubx_send_get_ack(gps, msg, 1000 / portTICK_RATE_MS);
+		ret = gps_send_get_ack(gps, msg, 1000 / portTICK_RATE_MS);
 		if (!ret) {
 			break;
 		} else if (ret != -ETIMEDOUT) {
@@ -452,7 +453,7 @@ void app_main(void)
 		}
 		printf("Retry...\n");
 	}
-	free(msg);
+	ubx_free(msg);
 	printf("Done...\n");
 
 	bool locked = false;
@@ -463,7 +464,7 @@ void app_main(void)
 	for (i = 0; !xEventGroupGetBits(exit_flags); i++) {
 		int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 500 / portTICK_RATE_MS);
 
-		msg = receive_ubx(data, len);
+		msg = ubx_receive(data, len);
 		while (msg) {
 			struct ubx_nav_pvt *pvt = (struct ubx_nav_pvt *)msg;
 
@@ -501,11 +502,11 @@ void app_main(void)
 				printf("Flash write took %lld us\n", us);
 			}
 
-			print_ubx_nav_pvt((struct ubx_nav_pvt *)msg);
-			free(msg);
+			ubx_print_nav_pvt((struct ubx_nav_pvt *)msg);
+			ubx_free(msg);
 
 			// See if there's any data left
-			msg = receive_ubx(NULL, 0);
+			msg = ubx_receive(NULL, 0);
 		}
 
 		fflush(stdout);
