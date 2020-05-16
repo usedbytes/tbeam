@@ -412,7 +412,6 @@ void app_main(void)
 	uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
 
 	struct ubx_message *msg, *resp;
-	uint8_t *p;
 
 	printf("Configure protocols...\n");
 	msg = alloc_msg(0x6, 0x00, 1);
@@ -464,51 +463,51 @@ void app_main(void)
 	for (i = 0; !xEventGroupGetBits(exit_flags); i++) {
 		int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 500 / portTICK_RATE_MS);
 
-		if (len) {
-			p = data;
-			msg = receive_ubx(&p, len);
-			if (msg) {
-				struct ubx_nav_pvt *pvt = (struct ubx_nav_pvt *)msg;
+		msg = receive_ubx(data, len);
+		while (msg) {
+			struct ubx_nav_pvt *pvt = (struct ubx_nav_pvt *)msg;
 
-				struct pvt_record rec = {
-					.timestamp = pvt->day * 24 * 3600 + pvt->hour * 3600 + pvt->min * 60 + pvt->sec,
-					.lon_semis = ubx_deg_to_semicircles(pvt->lon),
-					.lat_semis = ubx_deg_to_semicircles(pvt->lat),
-					.acc = pvt->hAcc,
-				};
+			struct pvt_record rec = {
+				.timestamp = pvt->day * 24 * 3600 + pvt->hour * 3600 + pvt->min * 60 + pvt->sec,
+				.lon_semis = ubx_deg_to_semicircles(pvt->lon),
+				.lat_semis = ubx_deg_to_semicircles(pvt->lat),
+				.acc = pvt->hAcc,
+			};
 
-				if (!locked && (pvt->flags & 1)) {
-					locked = true;
-					// Stop flashing
-					axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
+			if (!locked && (pvt->flags & 1)) {
+				locked = true;
+				// Stop flashing
+				axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x46);
 
-					if (f == NULL) {
-						char filename[128];
-						snprintf(filename, 128, "/spiffs/%d.bin", rec.timestamp);
-						f = fopen(filename, "w");
-					}
-				} else if (locked && !(pvt->flags & 1)) {
-					// Start flashing
-					locked = false;
-					axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
+				if (f == NULL) {
+					char filename[128];
+					snprintf(filename, 128, "/spiffs/%d.bin", rec.timestamp);
+					//f = fopen(filename, "w");
 				}
-
-				if (f != NULL) {
-					struct timeval start, end;
-					gettimeofday(&start, NULL);
-					fwrite(&rec, sizeof(rec), 1, f);
-					gettimeofday(&end, NULL);
-
-					int64_t us = ((int64_t)end.tv_sec * 1000000L + (int64_t)end.tv_usec) -
-					             ((int64_t)start.tv_sec * 1000000L + (int64_t)start.tv_usec);
-					printf("Flash write took %lld us\n", us);
-				}
-
-				print_ubx_nav_pvt((struct ubx_nav_pvt *)msg);
-			} else {
-				ESP_LOG_BUFFER_HEXDUMP("FOO", data, len, ESP_LOG_WARN);
+			} else if (locked && !(pvt->flags & 1)) {
+				// Start flashing
+				locked = false;
+				axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x6a);
 			}
+
+			if (f != NULL) {
+				struct timeval start, end;
+				gettimeofday(&start, NULL);
+				fwrite(&rec, sizeof(rec), 1, f);
+				gettimeofday(&end, NULL);
+
+				int64_t us = ((int64_t)end.tv_sec * 1000000L + (int64_t)end.tv_usec) -
+					((int64_t)start.tv_sec * 1000000L + (int64_t)start.tv_usec);
+				printf("Flash write took %lld us\n", us);
+			}
+
+			print_ubx_nav_pvt((struct ubx_nav_pvt *)msg);
+			free(msg);
+
+			// See if there's any data left
+			msg = receive_ubx(NULL, 0);
 		}
+
 		fflush(stdout);
 	}
 
