@@ -3,14 +3,24 @@
 #include <errno.h>
 
 #include <driver/gpio.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include "gps.h"
 
-static struct gps_ctx gps;
+struct gps_ctx {
+	uart_port_t uart;
+	size_t rxlen;
+	uint8_t buf[128];
+};
 
-// TODO: Probably should parameterise.
-struct gps_ctx *gps_init(void)
+struct gps_ctx *gps_init(uart_port_t uart_num, int tx_io_num, int rx_io_num)
 {
+	struct gps_ctx *gps = calloc(1, sizeof(*gps));
+	if (!gps) {
+		return NULL;
+	}
+
 	uart_config_t uart_config = {
 		.baud_rate = 9600,
 		.data_bits = UART_DATA_8_BITS,
@@ -19,20 +29,21 @@ struct gps_ctx *gps_init(void)
 		.flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
 		.source_clk = UART_SCLK_APB,
 	};
-	uart_driver_install(UART_NUM_1, 256, 0, 0, NULL, 0);
-	uart_param_config(UART_NUM_1, &uart_config);
-	uart_set_pin(UART_NUM_1, GPIO_NUM_12, GPIO_NUM_34,
+
+	gps->uart = uart_num;
+
+	uart_driver_install(gps->uart, 256, 0, 0, NULL, 0);
+	uart_param_config(gps->uart, &uart_config);
+	uart_set_pin(gps->uart, tx_io_num, rx_io_num,
 		     UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
-	gps.uart = UART_NUM_1;
-
-	return &gps;
+	return gps;
 }
 
 void gps_send_message(struct gps_ctx *gps, struct ubx_message *msg)
 {
 	ubx_add_checksum(msg);
-	uart_write_bytes(UART_NUM_1, (const char *)msg, msg->hdr.len + 6 + 2);
+	uart_write_bytes(gps->uart, (const char *)msg, msg->hdr.len + 6 + 2);
 }
 
 int gps_send_get_ack(struct gps_ctx *gps, struct ubx_message *msg, TickType_t timeout)
@@ -164,7 +175,7 @@ struct ubx_message *gps_receive(struct gps_ctx *gps, TickType_t timeout)
 
 	// Read new data until we have a message or timeout
 	while (!msg && (xTaskGetTickCount() - start) < timeout) {
-		gps->rxlen = uart_read_bytes(UART_NUM_1, gps->buf, sizeof(gps->buf), timeout);
+		gps->rxlen = uart_read_bytes(gps->uart, gps->buf, sizeof(gps->buf), timeout);
 
 		msg = ubx_receive(gps->buf, gps->rxlen);
 	}

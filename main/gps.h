@@ -9,13 +9,9 @@
 
 #include "ubx.h"
 
-struct gps_ctx {
-	uart_port_t uart;
-	uint8_t buf[128];
-	size_t rxlen;
-};
+struct gps_ctx;
 
-struct gps_ctx *gps_init(void);
+struct gps_ctx *gps_init(uart_port_t uart_num, int tx_io_num, int rx_io_num);
 
 struct ubx_message *gps_send_get_response(struct gps_ctx *gps, struct ubx_message *msg, TickType_t timeout);
 int gps_send_get_ack(struct gps_ctx *gps, struct ubx_message *msg, TickType_t timeout);

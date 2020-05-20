@@ -418,7 +418,7 @@ void app_main(void)
 
 	cycle_gps_power(true);
 
-	struct gps_ctx *gps = gps_init();
+	struct gps_ctx *gps = gps_init(UART_NUM_1, GPS_UART_TXD, GPS_UART_RXD);
 
 	vTaskDelay(1000 / portTICK_PERIOD_MS);
 
