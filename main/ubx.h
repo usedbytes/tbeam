@@ -6,6 +6,10 @@
 
 #include <stdint.h>
 
+#define UBX_MSG_CLASS_ACK  0x05
+#define UBX_MSG_ID_ACK_NAK 0x00
+#define UBX_MSG_ID_ACK_ACK 0x01
+
 #define UBX_MSG_CLASS_CFG  0x06
 #define UBX_MSG_ID_CFG_PRT 0x00
 #define UBX_MSG_ID_CFG_MSG 0x01
@@ -25,6 +29,19 @@ struct ubx_message {
 	struct ubx_header hdr;
 	// Variable length payload + checksum
 	uint8_t payload_csum[/* hdr.len + 2 */];
+};
+
+struct ubx_ack_ack {
+	struct ubx_header msg;
+	union {
+		uint8_t payload_csum[2 + 2];
+		struct {
+			uint8_t clsID;
+			uint8_t msgID;
+
+			// ck_a, ck_b
+		};
+	};
 };
 
 struct ubx_nav_pvt {

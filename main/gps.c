@@ -45,10 +45,11 @@ int gps_send_get_ack(struct gps_ctx *gps, struct ubx_message *msg, TickType_t ti
 	while (((xTaskGetTickCount() - start) < timeout)) {
 		resp = gps_receive(gps, 100 / portTICK_RATE_MS);
 		if (resp) {
-			if (resp->hdr.class == 0x5) {
-				if (resp->payload_csum[0] == msg->hdr.class &&
-				    resp->payload_csum[1] == msg->hdr.id) {
-					int ret = resp->hdr.id == 1 ? 0 : -EINVAL;
+			if (resp->hdr.class == UBX_MSG_CLASS_ACK) {
+				struct ubx_ack_ack *ack = (struct ubx_ack_ack *)resp;
+				if (ack->clsID == msg->hdr.class &&
+				    ack->msgID == msg->hdr.id) {
+					int ret = resp->hdr.id == UBX_MSG_ID_ACK_ACK ? 0 : -EINVAL;
 					free(resp);
 					return ret;
 			       }
