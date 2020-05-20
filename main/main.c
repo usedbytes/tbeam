@@ -422,9 +422,6 @@ void app_main(void)
 
 	vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-	uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
-	struct ubx_message *msg;
-
 	ret = gps_set_ubx_protocol(gps);
 	if (ret) {
 		ESP_LOGE(TAG, "Failed to set UBX protocol: %d\n", ret);
@@ -443,47 +440,53 @@ void app_main(void)
 	FILE *f = NULL;
 
 	for (i = 0; !xEventGroupGetBits(exit_flags); i++) {
-		msg = gps_receive(gps, 500 / portTICK_RATE_MS);
-		if (msg) {
-			struct ubx_nav_pvt *pvt = (struct ubx_nav_pvt *)msg;
-
-			struct pvt_record rec = {
-				.timestamp = pvt->day * 24 * 3600 + pvt->hour * 3600 + pvt->min * 60 + pvt->sec,
-				.lon_semis = ubx_deg_to_semicircles(pvt->lon),
-				.lat_semis = ubx_deg_to_semicircles(pvt->lat),
-				.acc = pvt->hAcc,
-			};
-
-			if (!locked && (pvt->flags & 1)) {
-				locked = true;
-				// Stop flashing
-				set_chgled(LED_MODE_MANUAL_OFF);
-
-				if (f == NULL) {
-					char filename[128];
-					snprintf(filename, 128, "%s/%d.bin", SPIFFS_MOUNT_POINT, rec.timestamp);
-					//f = fopen(filename, "w");
-				}
-			} else if (locked && !(pvt->flags & 1)) {
-				// Start flashing
-				locked = false;
-				set_chgled(LED_MODE_MANUAL_4HZ);
-			}
-
-			if (f != NULL) {
-				struct timeval start, end;
-				gettimeofday(&start, NULL);
-				fwrite(&rec, sizeof(rec), 1, f);
-				gettimeofday(&end, NULL);
-
-				int64_t us = ((int64_t)end.tv_sec * 1000000L + (int64_t)end.tv_usec) -
-					((int64_t)start.tv_sec * 1000000L + (int64_t)start.tv_usec);
-				printf("Flash write took %lld us\n", us);
-			}
-
-			ubx_print_nav_pvt((struct ubx_nav_pvt *)msg);
-			ubx_free(msg);
+		struct ubx_message *msg = gps_receive(gps, 500 / portTICK_RATE_MS);
+		if (!msg) {
+			continue;
 		}
+
+		if (msg->hdr.class != UBX_MSG_CLASS_NAV || msg->hdr.id != UBX_MSG_ID_NAV_PVT) {
+			continue;
+		}
+
+		struct ubx_nav_pvt *pvt = (struct ubx_nav_pvt *)msg;
+
+		struct pvt_record rec = {
+			.timestamp = pvt->day * 24 * 3600 + pvt->hour * 3600 + pvt->min * 60 + pvt->sec,
+			.lon_semis = ubx_deg_to_semicircles(pvt->lon),
+			.lat_semis = ubx_deg_to_semicircles(pvt->lat),
+			.acc = pvt->hAcc,
+		};
+
+		if (!locked && (pvt->flags & 1)) {
+			locked = true;
+			// Stop flashing
+			set_chgled(LED_MODE_MANUAL_OFF);
+
+			if (f == NULL) {
+				char filename[128];
+				snprintf(filename, 128, "%s/%d.bin", SPIFFS_MOUNT_POINT, rec.timestamp);
+				//f = fopen(filename, "w");
+			}
+		} else if (locked && !(pvt->flags & 1)) {
+			// Start flashing
+			locked = false;
+			set_chgled(LED_MODE_MANUAL_4HZ);
+		}
+
+		if (f != NULL) {
+			struct timeval start, end;
+			gettimeofday(&start, NULL);
+			fwrite(&rec, sizeof(rec), 1, f);
+			gettimeofday(&end, NULL);
+
+			int64_t us = ((int64_t)end.tv_sec * 1000000L + (int64_t)end.tv_usec) -
+				((int64_t)start.tv_sec * 1000000L + (int64_t)start.tv_usec);
+			printf("Flash write took %lld us\n", us);
+		}
+
+		ubx_print_nav_pvt((struct ubx_nav_pvt *)msg);
+		ubx_free(msg);
 
 		fflush(stdout);
 	}
