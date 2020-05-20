@@ -50,11 +50,13 @@ int gps_send_get_ack(struct gps_ctx *gps, struct ubx_message *msg, TickType_t ti
 {
 	struct ubx_message *resp = NULL;
 
+	TimeOut_t timeout_ctx;
+	vTaskSetTimeOutState(&timeout_ctx);
+
 	gps_send_message(gps, msg);
 
-	TickType_t start = xTaskGetTickCount();
-	while (((xTaskGetTickCount() - start) < timeout)) {
-		resp = gps_receive(gps, 100 / portTICK_RATE_MS);
+	while (xTaskCheckForTimeOut(&timeout_ctx, &timeout) == pdFALSE) {
+		resp = gps_receive(gps, timeout);
 		if (resp) {
 			if (resp->hdr.class == UBX_MSG_CLASS_ACK) {
 				struct ubx_ack_ack *ack = (struct ubx_ack_ack *)resp;
@@ -76,10 +78,12 @@ struct ubx_message *gps_send_get_response(struct gps_ctx *gps, struct ubx_messag
 {
 	struct ubx_message *resp = NULL;
 
+	TimeOut_t timeout_ctx;
+	vTaskSetTimeOutState(&timeout_ctx);
+
 	gps_send_message(gps, msg);
 
-	TickType_t start = xTaskGetTickCount();
-	while (((xTaskGetTickCount() - start) < timeout)) {
+	while (xTaskCheckForTimeOut(&timeout_ctx, &timeout) == pdFALSE) {
 		resp = gps_receive(gps, 100 / portTICK_RATE_MS);
 		if (resp) {
 			if (resp->hdr.class == msg->hdr.class &&
@@ -166,7 +170,8 @@ int gps_set_message_rate(struct gps_ctx *gps, uint8_t class, uint8_t id, uint8_t
 struct ubx_message *gps_receive(struct gps_ctx *gps, TickType_t timeout)
 {
 	struct ubx_message *msg = NULL;
-	TickType_t start = xTaskGetTickCount();
+	TimeOut_t timeout_ctx;
+	vTaskSetTimeOutState(&timeout_ctx);
 
 	// There's still some data to process
 	if (gps->rxlen) {
@@ -174,7 +179,7 @@ struct ubx_message *gps_receive(struct gps_ctx *gps, TickType_t timeout)
 	}
 
 	// Read new data until we have a message or timeout
-	while (!msg && (xTaskGetTickCount() - start) < timeout) {
+	while (!msg && (xTaskCheckForTimeOut(&timeout_ctx, &timeout) == pdFALSE)) {
 		gps->rxlen = uart_read_bytes(gps->uart, gps->buf, sizeof(gps->buf), timeout);
 
 		msg = ubx_receive(gps->buf, gps->rxlen);
