@@ -443,10 +443,8 @@ void app_main(void)
 	FILE *f = NULL;
 
 	for (i = 0; !xEventGroupGetBits(exit_flags); i++) {
-		int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 500 / portTICK_RATE_MS);
-
-		msg = ubx_receive(data, len);
-		while (msg) {
+		msg = gps_receive(gps, 500 / portTICK_RATE_MS);
+		if (msg) {
 			struct ubx_nav_pvt *pvt = (struct ubx_nav_pvt *)msg;
 
 			struct pvt_record rec = {
@@ -485,9 +483,6 @@ void app_main(void)
 
 			ubx_print_nav_pvt((struct ubx_nav_pvt *)msg);
 			ubx_free(msg);
-
-			// See if there's any data left
-			msg = ubx_receive(NULL, 0);
 		}
 
 		fflush(stdout);

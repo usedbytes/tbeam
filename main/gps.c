@@ -43,13 +43,8 @@ int gps_send_get_ack(struct gps_ctx *gps, struct ubx_message *msg, TickType_t ti
 
 	TickType_t start = xTaskGetTickCount();
 	while (((xTaskGetTickCount() - start) < timeout)) {
-		int len = uart_read_bytes(UART_NUM_1, gps->buf, sizeof(gps->buf), 100 / portTICK_RATE_MS);
-		if (!len) {
-			continue;
-		}
-
-		resp = ubx_receive(gps->buf, len);
-		while (resp) {
+		resp = gps_receive(gps, 100 / portTICK_RATE_MS);
+		if (resp) {
 			if (resp->hdr.class == 0x5) {
 				if (resp->payload_csum[0] == msg->hdr.class &&
 				    resp->payload_csum[1] == msg->hdr.id) {
@@ -59,8 +54,6 @@ int gps_send_get_ack(struct gps_ctx *gps, struct ubx_message *msg, TickType_t ti
 			       }
 			}
 			free(resp);
-
-			resp = ubx_receive(NULL, 0);
 		}
 	}
 
@@ -75,20 +68,13 @@ struct ubx_message *gps_send_get_response(struct gps_ctx *gps, struct ubx_messag
 
 	TickType_t start = xTaskGetTickCount();
 	while (((xTaskGetTickCount() - start) < timeout)) {
-		int len = uart_read_bytes(UART_NUM_1, gps->buf, sizeof(gps->buf), 100 / portTICK_RATE_MS);
-		if (!len) {
-			continue;
-		}
-
-		resp = ubx_receive(gps->buf, len);
-		while (resp) {
+		resp = gps_receive(gps, 100 / portTICK_RATE_MS);
+		if (resp) {
 			if (resp->hdr.class == msg->hdr.class &&
 			    resp->hdr.id == msg->hdr.id) {
 				return resp;
 			}
 			free(resp);
-
-			resp = ubx_receive(NULL, 0);
 		}
 	}
 
@@ -163,4 +149,29 @@ int gps_set_message_rate(struct gps_ctx *gps, uint8_t class, uint8_t id, uint8_t
 	ubx_free((struct ubx_message *)msg);
 
 	return ret;
+}
+
+struct ubx_message *gps_receive(struct gps_ctx *gps, TickType_t timeout)
+{
+	struct ubx_message *msg = NULL;
+	TickType_t start = xTaskGetTickCount();
+
+	// There's still some data to process
+	if (gps->rxlen) {
+		msg = ubx_receive(NULL, gps->rxlen);
+	}
+
+	// Read new data until we have a message or timeout
+	while (!msg && (xTaskGetTickCount() - start) < timeout) {
+		gps->rxlen = uart_read_bytes(UART_NUM_1, gps->buf, sizeof(gps->buf), timeout);
+
+		msg = ubx_receive(gps->buf, gps->rxlen);
+	}
+
+	// If there's still no message, then we need to start over
+	if (!msg) {
+		gps->rxlen = 0;
+	}
+
+	return msg;
 }
