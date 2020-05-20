@@ -32,7 +32,7 @@ struct ubx_message {
 };
 
 struct ubx_ack_ack {
-	struct ubx_header msg;
+	struct ubx_header hdr;
 	union {
 		uint8_t payload_csum[2 + 2];
 		struct {
@@ -45,7 +45,7 @@ struct ubx_ack_ack {
 };
 
 struct ubx_nav_pvt {
-	struct ubx_header msg;
+	struct ubx_header hdr;
 	union {
 		uint8_t payload_csum[92 + 2];
 		struct __attribute__((packed)) {
@@ -89,7 +89,7 @@ struct ubx_nav_pvt {
 };
 
 struct ubx_cfg_prt {
-	struct ubx_header msg;
+	struct ubx_header hdr;
 	union {
 		uint8_t payload_csum[20 + 2];
 		struct __attribute__((packed)) {
@@ -144,7 +144,7 @@ struct ubx_cfg_prt {
 };
 
 struct ubx_cfg_msg {
-	struct ubx_header msg;
+	struct ubx_header hdr;
 	union {
 		uint8_t payload_csum[8 + 2];
 		struct __attribute__((packed)) {
