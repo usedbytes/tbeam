@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2020 Brian Starkey <stark3y@gmail.com>
-
 #include <errno.h>
 
 #include <driver/gpio.h>
@@ -52,8 +51,8 @@ int gps_send_get_ack(struct gps_ctx *gps, struct ubx_message *msg, TickType_t ti
 		resp = ubx_receive(gps->buf, len);
 		while (resp) {
 			if (resp->hdr.class == 0x5) {
-			       if (resp->payload_csum[0] == msg->hdr.class &&
-				   resp->payload_csum[1] == msg->hdr.id) {
+				if (resp->payload_csum[0] == msg->hdr.class &&
+				    resp->payload_csum[1] == msg->hdr.id) {
 					int ret = resp->hdr.id == 1 ? 0 : -EINVAL;
 					free(resp);
 					return ret;
@@ -94,4 +93,74 @@ struct ubx_message *gps_send_get_response(struct gps_ctx *gps, struct ubx_messag
 	}
 
 	return NULL;
+}
+
+int gps_set_ubx_protocol(struct gps_ctx *gps)
+{
+	int ret, retries = 3;
+	struct ubx_message *resp;
+
+	// Request config for port 1 (UART)
+	struct ubx_cfg_prt *msg = (struct ubx_cfg_prt *)ubx_alloc(UBX_MSG_CLASS_CFG, UBX_MSG_ID_CFG_PRT, 1);
+	if (!msg) {
+		return -ENOMEM;
+	}
+
+	msg->poll.port = 1;
+	while (retries--) {
+		resp = gps_send_get_response(gps, (struct ubx_message *)msg, 1000 / portTICK_RATE_MS);
+		if (resp) {
+			break;
+		}
+	}
+	ubx_free((struct ubx_message *)msg);
+
+	if (!resp) {
+		return -ETIMEDOUT;
+	}
+
+	msg = (struct ubx_cfg_prt *)resp;
+	// Defensive...
+	resp = NULL;
+
+	// Set UBX only
+	msg->uart.outProtoMask = UBX_CFG_PRT_PROTOMASK_UBX;
+	retries = 3;
+	while (retries--) {
+		ret = gps_send_get_ack(gps, (struct ubx_message *)msg, 1000 / portTICK_RATE_MS);
+		if (!ret) {
+			break;
+		} else if (ret != -ETIMEDOUT) {
+			// Unexpected error
+			break;
+		}
+	}
+	free((struct ubx_message *)msg);
+
+	return ret;
+}
+
+int gps_set_message_rate(struct gps_ctx *gps, uint8_t class, uint8_t id, uint8_t rate)
+{
+	int ret, retries = 3;
+	struct ubx_cfg_msg *msg = (struct ubx_cfg_msg *)ubx_alloc(UBX_MSG_CLASS_CFG, UBX_MSG_ID_CFG_MSG, 3);
+	if (!msg) {
+		return -ENOMEM;
+	}
+
+	msg->set_current.msgClass = class;
+	msg->set_current.msgID = id;
+	msg->set_current.rate = rate;
+	while (retries--) {
+		ret = gps_send_get_ack(gps, (struct ubx_message *)msg, 1000 / portTICK_RATE_MS);
+		if (!ret) {
+			break;
+		} else if (ret != -ETIMEDOUT) {
+			// Unexpected error
+			break;
+		}
+	}
+	ubx_free((struct ubx_message *)msg);
+
+	return ret;
 }

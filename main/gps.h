@@ -20,4 +20,7 @@ struct ubx_message *gps_send_get_response(struct gps_ctx *gps, struct ubx_messag
 int gps_send_get_ack(struct gps_ctx *gps, struct ubx_message *msg, TickType_t timeout);
 void gps_send_message(struct gps_ctx *gps, struct ubx_message *msg);
 
+int gps_set_ubx_protocol(struct gps_ctx *gps);
+int gps_set_message_rate(struct gps_ctx *gps, uint8_t class, uint8_t id, uint8_t rate);
+
 #endif /* __GPS_H__ */

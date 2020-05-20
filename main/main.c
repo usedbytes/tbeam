@@ -407,13 +407,14 @@ void app_main(void)
 	}
 	ESP_ERROR_CHECK(err);
 
+#if 0
 	// Try and upload files
 	ret = wifi_init_sta();
 	if (ret == 0) {
 		send_files();
 	}
 	wifi_stop();
-
+#endif
 
 	cycle_gps_power(true);
 
@@ -422,49 +423,19 @@ void app_main(void)
 	vTaskDelay(1000 / portTICK_PERIOD_MS);
 
 	uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
-	struct ubx_message *msg, *resp;
+	struct ubx_message *msg;
 
-	printf("Configure protocols...\n");
-	msg = ubx_alloc(0x6, 0x00, 1);
-	msg->payload_csum[0] = 1;
-	while (1) {
-		resp = gps_send_get_response(gps, msg, 1000 / portTICK_RATE_MS);
-		if (resp) {
-			break;
-		}
-		printf("Retry...\n");
-	}
-	ubx_free(msg);
-	msg = resp;
-	resp = NULL;
-
-	msg->payload_csum[14] = 1;
-	while (1) {
-		ret = gps_send_get_ack(gps, msg, 1000 / portTICK_RATE_MS);
-		if (!ret) {
-			break;
-		} else if (ret != -ETIMEDOUT) {
-			printf("Unexpected error setting config.\n");
-		}
-		printf("Retry...\n");
+	ret = gps_set_ubx_protocol(gps);
+	if (ret) {
+		ESP_LOGE(TAG, "Failed to set UBX protocol: %d\n", ret);
+		return;
 	}
 
-	printf("Set message config...\n");
-	msg = ubx_alloc(0x6, 0x01, 3);
-	msg->payload_csum[0] = 1;
-	msg->payload_csum[1] = 7;
-	msg->payload_csum[2] = 1;
-	while (1) {
-		ret = gps_send_get_ack(gps, msg, 1000 / portTICK_RATE_MS);
-		if (!ret) {
-			break;
-		} else if (ret != -ETIMEDOUT) {
-			printf("Unexpected error setting config.\n");
-		}
-		printf("Retry...\n");
+	ret = gps_set_message_rate(gps, UBX_MSG_CLASS_NAV, UBX_MSG_ID_NAV_PVT, 1);
+	if (ret) {
+		ESP_LOGE(TAG, "Failed to set NAV_PVT rate: %d\n", ret);
+		return;
 	}
-	ubx_free(msg);
-	printf("Done...\n");
 
 	bool locked = false;
 	set_chgled(LED_MODE_MANUAL_4HZ);
