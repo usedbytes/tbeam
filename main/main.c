@@ -26,6 +26,7 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "driver/adc.h"
+#include "driver/timer.h"
 #include "esp_system.h"
 #include "esp_sleep.h"
 #include "esp_spi_flash.h"
@@ -234,6 +235,101 @@ static void cycle_gps_power(bool on)
 	}
 }
 
+static SemaphoreHandle_t timer_sem;
+
+// Approach derived from https://esp32.com/viewtopic.php?t=1341
+void IRAM_ATTR timer_group0_isr(void *param) {
+	static BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+	timer_group_clr_intr_status_in_isr(TIMER_GROUP_0, TIMER_0);
+	timer_group_enable_alarm_in_isr(TIMER_GROUP_0, TIMER_0);
+
+	xSemaphoreGiveFromISR(timer_sem, &xHigherPriorityTaskWoken);
+	if( xHigherPriorityTaskWoken) {
+		portYIELD_FROM_ISR(); // this wakes up accel_service immediately
+	}
+}
+
+static inline int64_t square(int32_t a)
+{
+	return a * a;
+}
+
+uint32_t calc_variance(uint16_t *vals, int nvals)
+{
+	int i;
+	int32_t mean = 0;
+	int64_t var = 0;
+
+	for (i = 0; i < nvals; i++) {
+		mean += vals[i];
+	}
+	mean = mean / 16;
+
+	for (i = 0; i < nvals; i++) {
+		var = var + square(mean - vals[i]);
+	}
+
+	return var / 16;
+}
+
+void accel_service(void *param)
+{
+	setup_adc();
+
+	// Power up accelerometer
+	gpio_config_t io_conf = {
+		.intr_type = GPIO_INTR_DISABLE,
+		.pin_bit_mask = (1ULL << GPIO_NUM_25),
+		.mode = GPIO_MODE_OUTPUT,
+		.pull_up_en = GPIO_PULLUP_DISABLE,
+		.pull_down_en = GPIO_PULLDOWN_DISABLE,
+	};
+	gpio_config(&io_conf);
+
+	gpio_set_drive_capability(GPIO_NUM_25, GPIO_DRIVE_CAP_1);
+	gpio_set_level(GPIO_NUM_25, 1);
+
+	// Set up the timer
+	timer_sem = xSemaphoreCreateBinary();
+
+	timer_config_t config = {
+		.divider = 16,
+		.counter_dir = TIMER_COUNT_UP,
+		.counter_en = TIMER_PAUSE,
+		.alarm_en = TIMER_ALARM_EN,
+		.auto_reload = TIMER_AUTORELOAD_EN,
+	};
+	timer_init(TIMER_GROUP_0, TIMER_0, &config);
+
+#define ACCEL_SAMPLES_PER_SEC 16
+	timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
+	timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, TIMER_BASE_CLK / (16 * ACCEL_SAMPLES_PER_SEC));
+	timer_enable_intr(TIMER_GROUP_0, TIMER_0);
+	timer_isr_register(TIMER_GROUP_0, TIMER_0, timer_group0_isr, NULL, ESP_INTR_FLAG_IRAM, NULL);
+
+	timer_start(TIMER_GROUP_0, TIMER_0);
+
+	int idx = 0;
+	uint16_t samples[3][16];
+	while (1) {
+		if (!xSemaphoreTake(timer_sem, portMAX_DELAY)) {
+			continue;
+		}
+
+		samples[0][idx] = adc1_get_raw(ADC1_CHANNEL_0);
+		samples[1][idx] = adc1_get_raw(ADC1_CHANNEL_1);
+		samples[2][idx] = adc1_get_raw(ADC1_CHANNEL_3);
+
+		idx++;
+		if (idx == 16) {
+			printf("%5d, %5d, %5d\n", calc_variance(samples[0], 16),
+			       calc_variance(samples[1], 16), calc_variance(samples[2], 16));
+			idx = 0;
+		}
+	}
+}
+
 struct pvt_record {
 	uint32_t timestamp;
 	int32_t lon_semis;
@@ -285,6 +381,8 @@ void app_main(void)
 	}
 
 	set_chgled(LED_MODE_AUTO);
+
+	xTaskCreatePinnedToCore(accel_service, "accel_service", 4096, NULL, configMAX_PRIORITIES - 1, NULL, 1);
 
 	for (i = 0; !xEventGroupGetBits(exit_flags); i++) {
 		float battvolt;
