@@ -177,126 +177,6 @@ void setup_battery_charger() {
 	axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_2, 0x41);
 }
 
-#define WEB_SERVER "192.168.0.253"
-#define WEB_PORT "8000"
-#define WEB_PATH "/"
-
-static const char *REQUEST_F = "PUT %s HTTP/1.0\r\n"
-    "Host: "WEB_SERVER":"WEB_PORT"\r\n"
-    "User-Agent: esp-idf/1.0 esp32\r\n"
-    "Content-type: application/octet-stream\r\n"
-    "Content-length: %lld\r\n"
-    "\r\n";
-
-int upload(char *filename, size_t size)
-{
-	const struct addrinfo hints = {
-		.ai_family = AF_INET,
-		.ai_socktype = SOCK_STREAM,
-	};
-	struct addrinfo *res;
-	struct in_addr *addr;
-	int s, r;
-	char recv_buf[64];
-
-	int err = getaddrinfo(WEB_SERVER, WEB_PORT, &hints, &res);
-
-	if(err != 0 || res == NULL) {
-		ESP_LOGE(TAG, "DNS lookup failed err=%d res=%p", err, res);
-		return -1;
-	}
-
-	addr = &((struct sockaddr_in *)res->ai_addr)->sin_addr;
-	ESP_LOGI(TAG, "DNS lookup succeeded. IP=%s", inet_ntoa(*addr));
-
-	s = socket(res->ai_family, res->ai_socktype, 0);
-	if(s < 0) {
-		ESP_LOGE(TAG, "... Failed to allocate socket.");
-		freeaddrinfo(res);
-		vTaskDelay(1000 / portTICK_PERIOD_MS);
-		return -1;
-	}
-	ESP_LOGI(TAG, "... allocated socket");
-
-	if(connect(s, res->ai_addr, res->ai_addrlen) != 0) {
-		ESP_LOGE(TAG, "... socket connect failed errno=%d", errno);
-		close(s);
-		freeaddrinfo(res);
-		return -1;
-	}
-
-	ESP_LOGI(TAG, "... connected");
-	freeaddrinfo(res);
-
-	struct timeval receiving_timeout;
-	receiving_timeout.tv_sec = 5;
-	receiving_timeout.tv_usec = 0;
-	if (setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &receiving_timeout,
-				sizeof(receiving_timeout)) < 0) {
-		ESP_LOGE(TAG, "... failed to set socket receiving timeout");
-		close(s);
-		return -1;
-	}
-	ESP_LOGI(TAG, "... set socket receiving timeout success");
-
-	FILE *fs = fdopen(s, "w+");
-
-	r = fprintf(fs, REQUEST_F, filename, (long long int)size);
-	if (r < 0) {
-		ESP_LOGE(TAG, "... socket send failed");
-		fclose(fs);
-		return -1;
-	}
-
-	FILE *fi = fopen(filename, "r");
-
-	do {
-		r = fread(recv_buf, 1, sizeof(recv_buf), fi);
-		if (r > 0) {
-			r = fwrite(recv_buf, 1, r, fs);
-		}
-	} while (r > 0);
-	fclose(fi);
-
-	ESP_LOGI(TAG, "... socket send success");
-
-	/* Read HTTP response */
-	do {
-		bzero(recv_buf, sizeof(recv_buf));
-		r = fread(recv_buf, 1, sizeof(recv_buf)-1, fs);
-		for(int i = 0; i < r; i++) {
-			putchar(recv_buf[i]);
-		}
-	} while(r > 0);
-
-	ESP_LOGI(TAG, "... done reading from socket. Last read return=%d errno=%d.", r, errno);
-	fclose(fs);
-
-	return 0;
-}
-
-void send_files()
-{
-	DIR *dir = opendir(SPIFFS_MOUNT_POINT);
-	struct dirent *ent;
-	struct stat st;
-	int ret;
-
-	while ((ent = readdir(dir))) {
-		char filename[290];
-		snprintf(filename, 290, "%s/%s", SPIFFS_MOUNT_POINT, ent->d_name);
-		stat(filename, &st);
-		printf("Entry: %s %ld\n", filename, st.st_size);
-
-		ret = upload(filename, st.st_size);
-		if (!ret) {
-			unlink(filename);
-		}
-	}
-
-	closedir(dir);
-}
-
 static void setup_adc()
 {
 	adc1_config_width(ADC_WIDTH_BIT_12);
@@ -361,13 +241,9 @@ struct pvt_record {
 	uint32_t acc;
 };
 
-extern int wifi_init_sta(void);
-extern void wifi_stop(void);
-
 void app_main(void)
 {
 	int i, ret;
-	esp_err_t err;
 
 	printf("Hello world!\n");
 
@@ -379,7 +255,7 @@ void app_main(void)
 	setup_battery_charger();
 
 	// Flash LED
-	set_chgled(LED_MODE_MANUAL_4HZ);
+	set_chgled(LED_MODE_MANUAL_1HZ);
 
 	// Power off everything we don't need
 	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
@@ -389,32 +265,6 @@ void app_main(void)
 	axp192_set_rail_state(&axp, AXP192_RAIL_EXTEN, false);
 
 	setup_buttons();
-
-	esp_vfs_spiffs_conf_t spiffsconf = {
-		.base_path = SPIFFS_MOUNT_POINT,
-		.partition_label = NULL,
-		.max_files = 5,
-		.format_if_mount_failed = true
-	};
-	err = esp_vfs_spiffs_register(&spiffsconf);
-	ESP_ERROR_CHECK(err);
-
-	//Initialize NVS
-	err = nvs_flash_init();
-	if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-		ESP_ERROR_CHECK(nvs_flash_erase());
-		err = nvs_flash_init();
-	}
-	ESP_ERROR_CHECK(err);
-
-#if 0
-	// Try and upload files
-	ret = wifi_init_sta();
-	if (ret == 0) {
-		send_files();
-	}
-	wifi_stop();
-#endif
 
 	cycle_gps_power(true);
 
@@ -434,12 +284,10 @@ void app_main(void)
 		return;
 	}
 
-	bool locked = false;
-	set_chgled(LED_MODE_MANUAL_4HZ);
-
-	FILE *f = NULL;
+	set_chgled(LED_MODE_AUTO);
 
 	for (i = 0; !xEventGroupGetBits(exit_flags); i++) {
+		float battvolt;
 		struct ubx_message *msg = gps_receive(gps, 500 / portTICK_RATE_MS);
 		if (!msg) {
 			continue;
@@ -451,52 +299,14 @@ void app_main(void)
 
 		struct ubx_nav_pvt *pvt = (struct ubx_nav_pvt *)msg;
 
-		struct pvt_record rec = {
-			.timestamp = pvt->day * 24 * 3600 + pvt->hour * 3600 + pvt->min * 60 + pvt->sec,
-			.lon_semis = ubx_deg_to_semicircles(pvt->lon),
-			.lat_semis = ubx_deg_to_semicircles(pvt->lat),
-			.acc = pvt->hAcc,
-		};
+		axp192_read(&axp, AXP192_BATTERY_VOLTAGE, &battvolt);
 
-		if (!locked && (pvt->flags & 1)) {
-			locked = true;
-			// Stop flashing
-			set_chgled(LED_MODE_MANUAL_OFF);
-
-			if (f == NULL) {
-				char filename[128];
-				snprintf(filename, 128, "%s/%d.bin", SPIFFS_MOUNT_POINT, rec.timestamp);
-				//f = fopen(filename, "w");
-			}
-		} else if (locked && !(pvt->flags & 1)) {
-			// Start flashing
-			locked = false;
-			set_chgled(LED_MODE_MANUAL_4HZ);
-		}
-
-		if (f != NULL) {
-			struct timeval start, end;
-			gettimeofday(&start, NULL);
-			fwrite(&rec, sizeof(rec), 1, f);
-			gettimeofday(&end, NULL);
-
-			int64_t us = ((int64_t)end.tv_sec * 1000000L + (int64_t)end.tv_usec) -
-				((int64_t)start.tv_sec * 1000000L + (int64_t)start.tv_usec);
-			printf("Flash write took %lld us\n", us);
-		}
-
-		ubx_print_nav_pvt((struct ubx_nav_pvt *)msg);
+		printf("Battery Voltage: %2.3f V\n", battvolt);
+		ubx_print_nav_pvt(pvt);
 		ubx_free(msg);
 
 		fflush(stdout);
 	}
-
-	if (f != NULL) {
-		fflush(f);
-		fclose(f);
-	}
-
-	esp_vfs_spiffs_unregister(spiffsconf.partition_label);
 
 	power_off();
 }
