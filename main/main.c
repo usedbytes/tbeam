@@ -15,6 +15,7 @@
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "freertos/event_groups.h"
 
 #include "lwip/err.h"
@@ -235,16 +236,19 @@ static void cycle_gps_power(bool on)
 	}
 }
 
-static SemaphoreHandle_t timer_sem;
+static QueueHandle_t accel_queue;
+
+#define ADC_TIMER 1
 
 // Approach derived from https://esp32.com/viewtopic.php?t=1341
 void IRAM_ATTR timer_group0_isr(void *param) {
 	static BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+	static const uint32_t event = ADC_TIMER;
 
 	timer_group_clr_intr_status_in_isr(TIMER_GROUP_0, TIMER_0);
 	timer_group_enable_alarm_in_isr(TIMER_GROUP_0, TIMER_0);
 
-	xSemaphoreGiveFromISR(timer_sem, &xHigherPriorityTaskWoken);
+	xQueueSendToBackFromISR(accel_queue, &event, &xHigherPriorityTaskWoken);
 	if( xHigherPriorityTaskWoken) {
 		portYIELD_FROM_ISR(); // this wakes up accel_service immediately
 	}
@@ -291,7 +295,7 @@ void accel_service(void *param)
 	gpio_set_level(GPIO_NUM_25, 1);
 
 	// Set up the timer
-	timer_sem = xSemaphoreCreateBinary();
+	accel_queue = xQueueCreate(5, sizeof(uint32_t));
 
 	timer_config_t config = {
 		.divider = 16,
@@ -313,19 +317,24 @@ void accel_service(void *param)
 	int idx = 0;
 	uint16_t samples[3][16];
 	while (1) {
-		if (!xSemaphoreTake(timer_sem, portMAX_DELAY)) {
+		uint32_t event;
+		if (!xQueueReceive(accel_queue, &event, portMAX_DELAY)) {
 			continue;
 		}
 
-		samples[0][idx] = adc1_get_raw(ADC1_CHANNEL_0);
-		samples[1][idx] = adc1_get_raw(ADC1_CHANNEL_1);
-		samples[2][idx] = adc1_get_raw(ADC1_CHANNEL_3);
+		switch (event) {
+		case ADC_TIMER:
+			samples[0][idx] = adc1_get_raw(ADC1_CHANNEL_0);
+			samples[1][idx] = adc1_get_raw(ADC1_CHANNEL_1);
+			samples[2][idx] = adc1_get_raw(ADC1_CHANNEL_3);
 
-		idx++;
-		if (idx == 16) {
-			printf("%5d, %5d, %5d\n", calc_variance(samples[0], 16),
-			       calc_variance(samples[1], 16), calc_variance(samples[2], 16));
-			idx = 0;
+			idx++;
+			if (idx == 16) {
+				printf("%5d, %5d, %5d\n", calc_variance(samples[0], 16),
+				       calc_variance(samples[1], 16), calc_variance(samples[2], 16));
+				idx = 0;
+			}
+			break;
 		}
 	}
 }
