@@ -64,3 +64,46 @@ struct service *service_lookup(const char *name)
 {
 	return find_service(name);
 }
+
+static int send_message(const struct service *service, const struct service_message *smsg)
+{
+	// TODO: Do we want a timeout?
+	BaseType_t ret = xQueueSendToBack(service->cmdq, smsg, 0);
+	if (ret != pdTRUE) {
+		return -1;
+	}
+
+	return 0;
+}
+
+int service_stop(const struct service *service)
+{
+	static struct service_message smsg = {
+		.cmd = SERVICE_CMD_STOP,
+	};
+	return send_message(service, &smsg);
+}
+
+int service_start(const struct service *service)
+{
+	static struct service_message smsg = {
+		.cmd = SERVICE_CMD_START,
+	};
+	return send_message(service, &smsg);
+}
+
+int service_pause(const struct service *service)
+{
+	static struct service_message smsg = {
+		.cmd = SERVICE_CMD_PAUSE,
+	};
+	return send_message(service, &smsg);
+}
+
+int service_resume(const struct service *service)
+{
+	static struct service_message smsg = {
+		.cmd = SERVICE_CMD_RESUME,
+	};
+	return send_message(service, &smsg);
+}

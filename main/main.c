@@ -284,6 +284,8 @@ void app_main(void)
 
 	service_register(&accel_service);
 
+	service_start(&accel_service);
+
 	for (i = 0; !xEventGroupGetBits(exit_flags); i++) {
 		float battvolt;
 		struct ubx_message *msg = gps_receive(gps, 500 / portTICK_RATE_MS);

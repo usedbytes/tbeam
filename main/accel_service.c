@@ -13,6 +13,8 @@
 
 #include "accel_service.h"
 
+#define ACCEL_SERVICE_SAMPLE_CMD SERVICE_CMD_LOCAL(1)
+
 static void accel_service_fn(void *param);
 struct service accel_service = {
 	.name = "accelerometer",
@@ -28,14 +30,12 @@ static void setup_adc()
 	adc1_config_channel_atten(ADC1_CHANNEL_3, ADC_ATTEN_DB_11);
 }
 
-#define ACCEL_SAMPLE_CMD 1
-
 // Approach derived from https://esp32.com/viewtopic.php?t=1341
 static void IRAM_ATTR timer_group0_isr(void *param) {
 	QueueHandle_t q = (QueueHandle_t)param;
 	static BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 	static const struct service_message smsg = {
-		.cmd = ACCEL_SAMPLE_CMD,
+		.cmd = ACCEL_SERVICE_SAMPLE_CMD,
 	};
 
 	timer_group_clr_intr_status_in_isr(TIMER_GROUP_0, TIMER_0);
@@ -77,7 +77,6 @@ static void accel_service_fn(void *param)
 
 	setup_adc();
 
-	// Power up accelerometer
 	gpio_config_t io_conf = {
 		.intr_type = GPIO_INTR_DISABLE,
 		.pin_bit_mask = (1ULL << GPIO_NUM_25),
@@ -86,9 +85,7 @@ static void accel_service_fn(void *param)
 		.pull_down_en = GPIO_PULLDOWN_DISABLE,
 	};
 	gpio_config(&io_conf);
-
 	gpio_set_drive_capability(GPIO_NUM_25, GPIO_DRIVE_CAP_1);
-	gpio_set_level(GPIO_NUM_25, 1);
 
 	timer_config_t config = {
 		.divider = 16,
@@ -105,10 +102,14 @@ static void accel_service_fn(void *param)
 	timer_enable_intr(TIMER_GROUP_0, TIMER_0);
 	timer_isr_register(TIMER_GROUP_0, TIMER_0, timer_group0_isr, service->cmdq, ESP_INTR_FLAG_IRAM, NULL);
 
-	timer_start(TIMER_GROUP_0, TIMER_0);
-
 	int idx = 0;
 	uint16_t samples[3][16];
+
+	enum state {
+		STOPPED = 0,
+		RUNNING = 1,
+	} state = STOPPED;
+
 	while (1) {
 		struct service_message smsg;
 		if (!xQueueReceive(service->cmdq, &smsg, portMAX_DELAY)) {
@@ -116,7 +117,23 @@ static void accel_service_fn(void *param)
 		}
 
 		switch (smsg.cmd) {
-		case ACCEL_SAMPLE_CMD:
+		case SERVICE_CMD_STOP:
+		case SERVICE_CMD_PAUSE:
+			timer_pause(TIMER_GROUP_0, TIMER_0);
+			timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0);
+			gpio_set_level(GPIO_NUM_25, 0);
+			state = STOPPED;
+			break;
+		case SERVICE_CMD_START:
+		case SERVICE_CMD_RESUME:
+			gpio_set_level(GPIO_NUM_25, 1);
+			timer_start(TIMER_GROUP_0, TIMER_0);
+			state = RUNNING;
+			break;
+		case ACCEL_SERVICE_SAMPLE_CMD:
+			if (state != RUNNING) {
+				break;
+			}
 			samples[0][idx] = adc1_get_raw(ADC1_CHANNEL_0);
 			samples[1][idx] = adc1_get_raw(ADC1_CHANNEL_1);
 			samples[2][idx] = adc1_get_raw(ADC1_CHANNEL_3);
@@ -127,6 +144,9 @@ static void accel_service_fn(void *param)
 				       calc_variance(samples[1], 16), calc_variance(samples[2], 16));
 				idx = 0;
 			}
+			break;
+		default:
+			// Unknown command
 			break;
 		}
 	}
