@@ -55,7 +55,7 @@ int gps_send_get_ack(struct gps_ctx *gps, struct ubx_message *msg, TickType_t ti
 
 	gps_send_message(gps, msg);
 
-	while (xTaskCheckForTimeOut(&timeout_ctx, &timeout) == pdFALSE) {
+	do {
 		resp = gps_receive(gps, timeout);
 		if (resp) {
 			if (resp->hdr.class == UBX_MSG_CLASS_ACK) {
@@ -69,7 +69,7 @@ int gps_send_get_ack(struct gps_ctx *gps, struct ubx_message *msg, TickType_t ti
 			}
 			free(resp);
 		}
-	}
+	} while (xTaskCheckForTimeOut(&timeout_ctx, &timeout) == pdFALSE);
 
 	return -ETIMEDOUT;
 }
@@ -83,7 +83,7 @@ struct ubx_message *gps_send_get_response(struct gps_ctx *gps, struct ubx_messag
 
 	gps_send_message(gps, msg);
 
-	while (xTaskCheckForTimeOut(&timeout_ctx, &timeout) == pdFALSE) {
+	do {
 		resp = gps_receive(gps, 100 / portTICK_RATE_MS);
 		if (resp) {
 			if (resp->hdr.class == msg->hdr.class &&
@@ -92,7 +92,7 @@ struct ubx_message *gps_send_get_response(struct gps_ctx *gps, struct ubx_messag
 			}
 			free(resp);
 		}
-	}
+	} while (xTaskCheckForTimeOut(&timeout_ctx, &timeout) == pdFALSE);
 
 	return NULL;
 }
@@ -179,10 +179,14 @@ struct ubx_message *gps_receive(struct gps_ctx *gps, TickType_t timeout)
 	}
 
 	// Read new data until we have a message or timeout
-	while (!msg && (xTaskCheckForTimeOut(&timeout_ctx, &timeout) == pdFALSE)) {
+	while (!msg) {
 		gps->rxlen = uart_read_bytes(gps->uart, gps->buf, sizeof(gps->buf), timeout);
 
 		msg = ubx_receive(gps->buf, gps->rxlen);
+
+		if (xTaskCheckForTimeOut(&timeout_ctx, &timeout)) {
+			break;
+		}
 	}
 
 	// If there's still no message, then we need to start over
