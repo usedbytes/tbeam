@@ -41,6 +41,7 @@
 #include "gps.h"
 #include "ubx.h"
 #include "service_manager.h"
+#include "accel_service.h"
 
 #define TAG "FOO"
 
@@ -180,14 +181,6 @@ void setup_battery_charger() {
 	axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_2, 0x41);
 }
 
-static void setup_adc()
-{
-	adc1_config_width(ADC_WIDTH_BIT_12);
-	adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_DB_11);
-	adc1_config_channel_atten(ADC1_CHANNEL_1, ADC_ATTEN_DB_11);
-	adc1_config_channel_atten(ADC1_CHANNEL_3, ADC_ATTEN_DB_11);
-}
-
 static void setup_buttons()
 {
 	gpio_config_t io_conf;
@@ -236,115 +229,6 @@ static void cycle_gps_power(bool on)
 		axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
 	}
 }
-
-#define ACCEL_SAMPLE_CMD 1
-
-// Approach derived from https://esp32.com/viewtopic.php?t=1341
-void IRAM_ATTR timer_group0_isr(void *param) {
-	QueueHandle_t q = (QueueHandle_t)param;
-	static BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-	static const struct service_message smsg = {
-		.cmd = ACCEL_SAMPLE_CMD,
-	};
-
-	timer_group_clr_intr_status_in_isr(TIMER_GROUP_0, TIMER_0);
-	timer_group_enable_alarm_in_isr(TIMER_GROUP_0, TIMER_0);
-
-	xQueueSendToBackFromISR(q, &smsg, &xHigherPriorityTaskWoken);
-	if( xHigherPriorityTaskWoken) {
-		portYIELD_FROM_ISR(); // this wakes up accel_service immediately
-	}
-}
-
-static inline int64_t square(int32_t a)
-{
-	return a * a;
-}
-
-uint32_t calc_variance(uint16_t *vals, int nvals)
-{
-	int i;
-	int32_t mean = 0;
-	int64_t var = 0;
-
-	for (i = 0; i < nvals; i++) {
-		mean += vals[i];
-	}
-	mean = mean / 16;
-
-	for (i = 0; i < nvals; i++) {
-		var = var + square(mean - vals[i]);
-	}
-
-	return var / 16;
-}
-
-void accel_service_fn(void *param)
-{
-	struct service *service = (struct service *)param;
-
-	setup_adc();
-
-	// Power up accelerometer
-	gpio_config_t io_conf = {
-		.intr_type = GPIO_INTR_DISABLE,
-		.pin_bit_mask = (1ULL << GPIO_NUM_25),
-		.mode = GPIO_MODE_OUTPUT,
-		.pull_up_en = GPIO_PULLUP_DISABLE,
-		.pull_down_en = GPIO_PULLDOWN_DISABLE,
-	};
-	gpio_config(&io_conf);
-
-	gpio_set_drive_capability(GPIO_NUM_25, GPIO_DRIVE_CAP_1);
-	gpio_set_level(GPIO_NUM_25, 1);
-
-	timer_config_t config = {
-		.divider = 16,
-		.counter_dir = TIMER_COUNT_UP,
-		.counter_en = TIMER_PAUSE,
-		.alarm_en = TIMER_ALARM_EN,
-		.auto_reload = TIMER_AUTORELOAD_EN,
-	};
-	timer_init(TIMER_GROUP_0, TIMER_0, &config);
-
-#define ACCEL_SAMPLES_PER_SEC 16
-	timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
-	timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, TIMER_BASE_CLK / (16 * ACCEL_SAMPLES_PER_SEC));
-	timer_enable_intr(TIMER_GROUP_0, TIMER_0);
-	timer_isr_register(TIMER_GROUP_0, TIMER_0, timer_group0_isr, service->cmdq, ESP_INTR_FLAG_IRAM, NULL);
-
-	timer_start(TIMER_GROUP_0, TIMER_0);
-
-	int idx = 0;
-	uint16_t samples[3][16];
-	while (1) {
-		struct service_message smsg;
-		if (!xQueueReceive(service->cmdq, &smsg, portMAX_DELAY)) {
-			continue;
-		}
-
-		switch (smsg.cmd) {
-		case ACCEL_SAMPLE_CMD:
-			samples[0][idx] = adc1_get_raw(ADC1_CHANNEL_0);
-			samples[1][idx] = adc1_get_raw(ADC1_CHANNEL_1);
-			samples[2][idx] = adc1_get_raw(ADC1_CHANNEL_3);
-
-			idx++;
-			if (idx == 16) {
-				printf("%5d, %5d, %5d\n", calc_variance(samples[0], 16),
-				       calc_variance(samples[1], 16), calc_variance(samples[2], 16));
-				idx = 0;
-			}
-			break;
-		}
-	}
-}
-
-struct service accel_service = {
-	.name = "accelerometer",
-	.fn = accel_service_fn,
-	.priority = configMAX_PRIORITIES - 1,
-};
 
 struct pvt_record {
 	uint32_t timestamp;
