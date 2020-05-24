@@ -40,6 +40,7 @@
 #include "axp192.h"
 #include "gps.h"
 #include "ubx.h"
+#include "service_manager.h"
 
 #define TAG "FOO"
 
@@ -236,19 +237,20 @@ static void cycle_gps_power(bool on)
 	}
 }
 
-static QueueHandle_t accel_queue;
-
-#define ADC_TIMER 1
+#define ACCEL_SAMPLE_CMD 1
 
 // Approach derived from https://esp32.com/viewtopic.php?t=1341
 void IRAM_ATTR timer_group0_isr(void *param) {
+	QueueHandle_t q = (QueueHandle_t)param;
 	static BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-	static const uint32_t event = ADC_TIMER;
+	static const struct service_message smsg = {
+		.cmd = ACCEL_SAMPLE_CMD,
+	};
 
 	timer_group_clr_intr_status_in_isr(TIMER_GROUP_0, TIMER_0);
 	timer_group_enable_alarm_in_isr(TIMER_GROUP_0, TIMER_0);
 
-	xQueueSendToBackFromISR(accel_queue, &event, &xHigherPriorityTaskWoken);
+	xQueueSendToBackFromISR(q, &smsg, &xHigherPriorityTaskWoken);
 	if( xHigherPriorityTaskWoken) {
 		portYIELD_FROM_ISR(); // this wakes up accel_service immediately
 	}
@@ -277,8 +279,10 @@ uint32_t calc_variance(uint16_t *vals, int nvals)
 	return var / 16;
 }
 
-void accel_service(void *param)
+void accel_service_fn(void *param)
 {
+	struct service *service = (struct service *)param;
+
 	setup_adc();
 
 	// Power up accelerometer
@@ -294,9 +298,6 @@ void accel_service(void *param)
 	gpio_set_drive_capability(GPIO_NUM_25, GPIO_DRIVE_CAP_1);
 	gpio_set_level(GPIO_NUM_25, 1);
 
-	// Set up the timer
-	accel_queue = xQueueCreate(5, sizeof(uint32_t));
-
 	timer_config_t config = {
 		.divider = 16,
 		.counter_dir = TIMER_COUNT_UP,
@@ -310,20 +311,20 @@ void accel_service(void *param)
 	timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
 	timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, TIMER_BASE_CLK / (16 * ACCEL_SAMPLES_PER_SEC));
 	timer_enable_intr(TIMER_GROUP_0, TIMER_0);
-	timer_isr_register(TIMER_GROUP_0, TIMER_0, timer_group0_isr, NULL, ESP_INTR_FLAG_IRAM, NULL);
+	timer_isr_register(TIMER_GROUP_0, TIMER_0, timer_group0_isr, service->cmdq, ESP_INTR_FLAG_IRAM, NULL);
 
 	timer_start(TIMER_GROUP_0, TIMER_0);
 
 	int idx = 0;
 	uint16_t samples[3][16];
 	while (1) {
-		uint32_t event;
-		if (!xQueueReceive(accel_queue, &event, portMAX_DELAY)) {
+		struct service_message smsg;
+		if (!xQueueReceive(service->cmdq, &smsg, portMAX_DELAY)) {
 			continue;
 		}
 
-		switch (event) {
-		case ADC_TIMER:
+		switch (smsg.cmd) {
+		case ACCEL_SAMPLE_CMD:
 			samples[0][idx] = adc1_get_raw(ADC1_CHANNEL_0);
 			samples[1][idx] = adc1_get_raw(ADC1_CHANNEL_1);
 			samples[2][idx] = adc1_get_raw(ADC1_CHANNEL_3);
@@ -338,6 +339,12 @@ void accel_service(void *param)
 		}
 	}
 }
+
+struct service accel_service = {
+	.name = "accelerometer",
+	.fn = accel_service_fn,
+	.priority = configMAX_PRIORITIES - 1,
+};
 
 struct pvt_record {
 	uint32_t timestamp;
@@ -391,7 +398,7 @@ void app_main(void)
 
 	set_chgled(LED_MODE_AUTO);
 
-	xTaskCreatePinnedToCore(accel_service, "accel_service", 4096, NULL, configMAX_PRIORITIES - 1, NULL, 1);
+	service_register(&accel_service);
 
 	for (i = 0; !xEventGroupGetBits(exit_flags); i++) {
 		float battvolt;
