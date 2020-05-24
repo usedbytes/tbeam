@@ -14,7 +14,7 @@ struct gps_ctx {
 	uint8_t buf[128];
 };
 
-struct gps_ctx *gps_init(uart_port_t uart_num, int tx_io_num, int rx_io_num)
+struct gps_ctx *gps_init(uart_port_t uart_num, int tx_io_num, int rx_io_num, QueueHandle_t *eventq)
 {
 	struct gps_ctx *gps = calloc(1, sizeof(*gps));
 	if (!gps) {
@@ -32,7 +32,7 @@ struct gps_ctx *gps_init(uart_port_t uart_num, int tx_io_num, int rx_io_num)
 
 	gps->uart = uart_num;
 
-	uart_driver_install(gps->uart, 256, 0, 0, NULL, 0);
+	uart_driver_install(gps->uart, 256, 256, 20, eventq, 0);
 	uart_param_config(gps->uart, &uart_config);
 	uart_set_pin(gps->uart, tx_io_num, rx_io_num,
 		     UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);

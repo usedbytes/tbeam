@@ -42,6 +42,7 @@
 #include "ubx.h"
 #include "service_manager.h"
 #include "accel_service.h"
+#include "gps_service.h"
 
 #define TAG "FOO"
 
@@ -220,16 +221,6 @@ static void setup_buttons()
 	gpio_isr_handler_add(PMIC_IRQ, gpio_isr_handler, (void*)PMIC_IRQ);
 }
 
-static void cycle_gps_power(bool on)
-{
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
-	axp192_set_rail_millivolts(&axp, AXP192_RAIL_LDO3, 3300);
-
-	if (on) {
-		axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
-	}
-}
-
 struct pvt_record {
 	uint32_t timestamp;
 	int32_t lon_semis;
@@ -262,50 +253,28 @@ void app_main(void)
 
 	setup_buttons();
 
-	cycle_gps_power(true);
-
-	struct gps_ctx *gps = gps_init(UART_NUM_1, GPS_UART_TXD, GPS_UART_RXD);
-
 	vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-	ret = gps_set_ubx_protocol(gps);
-	if (ret) {
-		ESP_LOGE(TAG, "Failed to set UBX protocol: %d\n", ret);
-		return;
-	}
-
-	ret = gps_set_message_rate(gps, UBX_MSG_CLASS_NAV, UBX_MSG_ID_NAV_PVT, 1);
-	if (ret) {
-		ESP_LOGE(TAG, "Failed to set NAV_PVT rate: %d\n", ret);
-		return;
-	}
 
 	set_chgled(LED_MODE_AUTO);
 
 	service_register(&accel_service);
+	service_register(&gps_service);
 
+	service_start(&gps_service);
 	service_start(&accel_service);
+
+	printf("Waiting for GPS to config\n");
+	service_sync(&gps_service);
+	printf("Done\n");
 
 	for (i = 0; !xEventGroupGetBits(exit_flags); i++) {
 		float battvolt;
-		struct ubx_message *msg = gps_receive(gps, 500 / portTICK_RATE_MS);
-		if (!msg) {
-			continue;
-		}
-
-		if (msg->hdr.class != UBX_MSG_CLASS_NAV || msg->hdr.id != UBX_MSG_ID_NAV_PVT) {
-			continue;
-		}
-
-		struct ubx_nav_pvt *pvt = (struct ubx_nav_pvt *)msg;
 
 		axp192_read(&axp, AXP192_BATTERY_VOLTAGE, &battvolt);
-
 		printf("Battery Voltage: %2.3f V\n", battvolt);
-		ubx_print_nav_pvt(pvt);
-		ubx_free(msg);
 
 		fflush(stdout);
+		vTaskDelay(500 / portTICK_PERIOD_MS);
 	}
 
 	power_off();
