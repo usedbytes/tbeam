@@ -32,7 +32,7 @@ static void setup_adc()
 
 // Approach derived from https://esp32.com/viewtopic.php?t=1341
 static void IRAM_ATTR timer_group0_isr(void *param) {
-	QueueHandle_t q = (QueueHandle_t)param;
+	struct service *service = (struct service *)param;
 	static BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 	static const struct service_message smsg = {
 		.cmd = ACCEL_SERVICE_SAMPLE_CMD,
@@ -42,7 +42,7 @@ static void IRAM_ATTR timer_group0_isr(void *param) {
 	timer_group_enable_alarm_in_isr(TIMER_GROUP_0, TIMER_0);
 
 	// Nothing we can do if the queue is full, so just ignore return code
-	xQueueSendToBackFromISR(q, &smsg, &xHigherPriorityTaskWoken);
+	service_send_message_from_isr(service, &smsg, &xHigherPriorityTaskWoken);
 	if( xHigherPriorityTaskWoken) {
 		portYIELD_FROM_ISR(); // this wakes up accel_service immediately
 	}
@@ -100,7 +100,7 @@ static void accel_service_fn(void *param)
 	timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
 	timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, TIMER_BASE_CLK / (16 * ACCEL_SAMPLES_PER_SEC));
 	timer_enable_intr(TIMER_GROUP_0, TIMER_0);
-	timer_isr_register(TIMER_GROUP_0, TIMER_0, timer_group0_isr, service->cmdq, ESP_INTR_FLAG_IRAM, NULL);
+	timer_isr_register(TIMER_GROUP_0, TIMER_0, timer_group0_isr, service, ESP_INTR_FLAG_IRAM, NULL);
 
 	int idx = 0;
 	uint16_t samples[3][16];
@@ -112,7 +112,7 @@ static void accel_service_fn(void *param)
 
 	while (1) {
 		struct service_message smsg;
-		if (!xQueueReceive(service->cmdq, &smsg, portMAX_DELAY)) {
+		if (service_receive_message(service, &smsg, portMAX_DELAY)) {
 			continue;
 		}
 
@@ -149,5 +149,8 @@ static void accel_service_fn(void *param)
 			// Unknown command
 			break;
 		}
+
+		// Acknowledge the command
+		service_ack(service);
 	}
 }

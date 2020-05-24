@@ -44,20 +44,30 @@ int service_register(struct service *service)
 {
 	BaseType_t ret;
 
+	assert(service->cmdq == 0);
+
 	service->cmdq = xQueueCreate(5, sizeof(struct service_message));
 	if (!service->cmdq) {
-		return -1;
+		goto fail;
 	}
+
+	service->sent = 0;
+	service->processed = 0;
+	vPortCPUInitializeMutex(&service->lock);
 
 	ret = xTaskCreatePinnedToCore(service->fn, service->name, 4096, service, service->priority, NULL, 1);
 	if (ret != pdPASS) {
-		vQueueDelete(service->cmdq);
-		return -1;
+		goto fail;
 	}
 
 	add_service(service);
 
 	return 0;
+
+fail:
+	if (service->cmdq)
+		vQueueDelete(service->cmdq);
+	return -1;
 }
 
 struct service *service_lookup(const char *name)
@@ -65,10 +75,44 @@ struct service *service_lookup(const char *name)
 	return find_service(name);
 }
 
-static int send_message(const struct service *service, const struct service_message *smsg)
+void service_ack(struct service *service)
 {
-	// TODO: Do we want a timeout?
-	BaseType_t ret = xQueueSendToBack(service->cmdq, smsg, 0);
+	portENTER_CRITICAL(&service->lock);
+	service->processed++;
+	portEXIT_CRITICAL(&service->lock);
+}
+
+int service_send_message_from_isr(struct service *service, const struct service_message *smsg, BaseType_t *xHigherPriorityTaskWoken)
+{
+	BaseType_t ret = xQueueSendToBackFromISR(service->cmdq, smsg, xHigherPriorityTaskWoken);
+	if (ret != pdTRUE) {
+		return -1;
+	}
+
+	portENTER_CRITICAL_ISR(&service->lock);
+	service->sent++;
+	portEXIT_CRITICAL_ISR(&service->lock);
+
+	return 0;
+}
+
+int service_send_message(struct service *service, const struct service_message *smsg, TickType_t timeout)
+{
+	BaseType_t ret = xQueueSendToBack(service->cmdq, smsg, timeout);
+	if (ret != pdTRUE) {
+		return -1;
+	}
+
+	portENTER_CRITICAL(&service->lock);
+	service->sent++;
+	portEXIT_CRITICAL(&service->lock);
+
+	return 0;
+}
+
+int service_receive_message(struct service *service, struct service_message *smsg, TickType_t timeout)
+{
+	BaseType_t ret = xQueueReceive(service->cmdq, smsg, timeout);
 	if (ret != pdTRUE) {
 		return -1;
 	}
@@ -76,34 +120,48 @@ static int send_message(const struct service *service, const struct service_mess
 	return 0;
 }
 
-int service_stop(const struct service *service)
+int service_stop(struct service *service)
 {
 	static struct service_message smsg = {
 		.cmd = SERVICE_CMD_STOP,
 	};
-	return send_message(service, &smsg);
+	return service_send_message(service, &smsg, portMAX_DELAY);
 }
 
-int service_start(const struct service *service)
+int service_start(struct service *service)
 {
 	static struct service_message smsg = {
 		.cmd = SERVICE_CMD_START,
 	};
-	return send_message(service, &smsg);
+	return service_send_message(service, &smsg, portMAX_DELAY);
 }
 
-int service_pause(const struct service *service)
+int service_pause(struct service *service)
 {
 	static struct service_message smsg = {
 		.cmd = SERVICE_CMD_PAUSE,
 	};
-	return send_message(service, &smsg);
+	return service_send_message(service, &smsg, portMAX_DELAY);
 }
 
-int service_resume(const struct service *service)
+int service_resume(struct service *service)
 {
 	static struct service_message smsg = {
 		.cmd = SERVICE_CMD_RESUME,
 	};
-	return send_message(service, &smsg);
+	return service_send_message(service, &smsg, portMAX_DELAY);
+}
+
+void service_sync(const struct service *service)
+{
+	uint32_t sent, processed;
+
+	sent = service->sent;
+	processed = service->processed;
+	while (processed != sent) {
+		// FIXME: Use a semaphore
+		vTaskDelay(1);
+		sent = service->sent;
+		processed = service->processed;
+	}
 }

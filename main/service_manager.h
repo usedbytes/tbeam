@@ -15,16 +15,17 @@ struct service {
 	void (*fn)(void *pvParameter);
 	UBaseType_t priority;
 
-	// Populated by service_register
-	QueueHandle_t cmdq;
-
 	// Internal
 	struct __node node;
+	QueueHandle_t cmdq;
+	portMUX_TYPE lock;
+	volatile uint32_t sent;
+	volatile uint32_t processed;
 };
 
-#define SERVICE_CMD(_scope, _cmd) (((_scope) << 16) | (_cmd))
-#define SERVICE_CMD_GLOBAL(_cmd) SERVICE_CMD(0, _cmd)
-#define SERVICE_CMD_LOCAL(_cmd) SERVICE_CMD(1, _cmd)
+#define SERVICE_CMD(_scope, _cmd)   (((_scope) << 16) | (_cmd))
+#define SERVICE_CMD_GLOBAL(_cmd)    SERVICE_CMD(0, _cmd)
+#define SERVICE_CMD_LOCAL(_cmd)     SERVICE_CMD(1, _cmd)
 
 #define SERVICE_CMD_STOP   SERVICE_CMD_GLOBAL(0)
 #define SERVICE_CMD_START  SERVICE_CMD_GLOBAL(1)
@@ -39,9 +40,20 @@ struct service_message {
 int service_register(struct service *service);
 struct service *service_lookup(const char *name);
 
-int service_stop(const struct service *service);
-int service_start(const struct service *service);
-int service_pause(const struct service *service);
-int service_resume(const struct service *service);
+int service_send_message_from_isr(struct service *service, const struct service_message *smsg,
+				  BaseType_t *xHigherPriorityTaskWoken);
+int service_send_message(struct service *service, const struct service_message *smsg,
+			 TickType_t timeout);
+int service_receive_message(struct service *service, struct service_message *smsg,
+			    TickType_t timeout);
+
+int service_stop(struct service *service);
+int service_start(struct service *service);
+int service_pause(struct service *service);
+int service_resume(struct service *service);
+void service_sync(const struct service *service);
+
+// For use by service "fn" routines only
+void service_ack(struct service *service);
 
 #endif /* __SERVICE_MANAGER_H__ */
