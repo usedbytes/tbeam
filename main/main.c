@@ -97,9 +97,6 @@ void main_service_fn(void *param)
 {
 	struct service *service = (struct service *)param;
 
-	service_register(&accel_service);
-	service_register(&gps_service);
-
 	while (1) {
 		struct service_message smsg;
 		if (service_receive_message(service, &smsg, portMAX_DELAY)) {
@@ -139,23 +136,16 @@ void app_main(void)
 
 	service_register(&main_service);
 	service_register(&pmic_service);
+	service_register(&accel_service);
+	service_register(&gps_service);
+
+	// TODO: Once services request power from pmic_service, this can
+	// move into main_service START.
 	service_start(&pmic_service);
 	service_sync(&pmic_service);
+
 	service_start(&main_service);
 	service_sync(&main_service);
 
-	while (1) {
-		/*
-		float battvolt;
-
-		axp192_read(&axp, AXP192_BATTERY_VOLTAGE, &battvolt);
-		smsg.arg = battvolt * 1000;
-
-		service_send_message(&main_service, &smsg, 0);
-		service_sync(&main_service);
-
-		vTaskDelay(500 / portTICK_PERIOD_MS);
-		*/
-		vTaskDelay(portMAX_DELAY);
-	}
+	// All handled by service tasks now.
 }
