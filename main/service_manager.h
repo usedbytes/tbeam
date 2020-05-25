@@ -23,6 +23,7 @@ struct service {
 	volatile uint32_t processed;
 };
 
+#define SERVICE_SCOPE(_a, _b)       ((((_a) & 0xff) << 8) | ((_b) & 0xff))
 #define SERVICE_CMD(_scope, _cmd)   (((_scope) << 16) | (_cmd))
 #define SERVICE_CMD_GLOBAL(_cmd)    SERVICE_CMD(0, _cmd)
 #define SERVICE_CMD_LOCAL(_cmd)     SERVICE_CMD(1, _cmd)

@@ -36,13 +36,11 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 
-#include "i2c_helper.h"
-#include "axp192.h"
-#include "gps.h"
-#include "ubx.h"
+#include "gpio_handler.c"
 #include "service_manager.h"
 #include "accel_service.h"
 #include "gps_service.h"
+#include "pmic_service.h"
 
 #define TAG "FOO"
 
@@ -88,148 +86,6 @@
  * N_OE is floating
  */
 
-#define BUF_SIZE (1024)
-
-const axp192_t axp = {
-	.read = &i2c_read,
-	.write = &i2c_write,
-};
-uint8_t irqmask[5] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-uint8_t irqstatus[5] = { 0 };
-
-static xQueueHandle gpio_evt_queue = NULL;
-static EventGroupHandle_t exit_flags;
-
-static void IRAM_ATTR gpio_isr_handler(void* arg)
-{
-	uint32_t gpio_num = (uint32_t)arg;
-	xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
-}
-
-// These match the register definition.
-enum led_mode {
-	// Switch to charger-controlled LED
-	LED_MODE_AUTO = 0,
-	LED_MODE_MANUAL_OFF = 1,
-	LED_MODE_MANUAL_1HZ = 3,
-	LED_MODE_MANUAL_4HZ = 5,
-	LED_MODE_MANUAL_ON = 7,
-};
-
-static void set_chgled(enum led_mode mode)
-{
-	uint8_t val;
-	axp192_read_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, &val);
-
-	val &= ~(7 << 3);
-	val |= (mode << 3);
-
-	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, val);
-}
-
-static void power_off()
-{
-	// Flash LED
-	set_chgled(LED_MODE_MANUAL_4HZ);
-
-	// Save whatever state needs saving...
-
-	// Power off all rails.
-	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
-	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC2, false);
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, false);
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
-	axp192_set_rail_state(&axp, AXP192_RAIL_EXTEN, false);
-
-	vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-	// Turn off.
-	axp192_write_reg(&axp, AXP192_SHUTDOWN_BATTERY_CHGLED_CONTROL, 0x80);
-
-	for ( ;; ) {
-		// This function does not return
-	}
-}
-
-void monitor_buttons(void *pvParameter)
-{
-	uint32_t io_num;
-	while(1) {
-		if(xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
-			switch (io_num) {
-				case USER_BTN:
-					printf("Button pressed. GPIO[%d] intr, val: %d\n", io_num, gpio_get_level((gpio_num_t)io_num));
-					break;
-				case PMIC_IRQ:
-					axp192_read_irq_status(&axp, irqmask, irqstatus, true);
-					if (irqstatus[2] & (1 << 1)) {
-						printf("Power button pressed.\n");
-
-						xEventGroupSetBits(exit_flags, 1);
-					}
-					break;
-				default:
-					printf("Unexpected GPIO event\n");
-			}
-		}
-	}
-}
-
-void setup_battery_charger() {
-	// 4.2 V, 780 mA
-	axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_1, 0xC8);
-	// Default values - 40 min precharge, 8 hour constant current
-	axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_2, 0x41);
-}
-
-static void setup_buttons()
-{
-	gpio_config_t io_conf;
-
-	// Clear all PMIC IRQs
-	axp192_read_irq_status(&axp, irqmask, irqstatus, true);
-	memset(irqstatus, 0, sizeof(irqstatus));
-
-	irqmask[0] = 0;
-	irqmask[1] = 0;
-	// Short button press IRQ
-	irqmask[2] = (1 << 1);
-	irqmask[3] = 0;
-	irqmask[4] = 0;
-	axp192_write_irq_mask(&axp, irqmask);
-
-	io_conf.intr_type = GPIO_INTR_NEGEDGE;
-	io_conf.pin_bit_mask = (1ULL << USER_BTN);
-	io_conf.mode = GPIO_MODE_INPUT;
-	io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-	gpio_config(&io_conf);
-
-	io_conf.intr_type = GPIO_INTR_NEGEDGE;
-	io_conf.pin_bit_mask = (1ULL << PMIC_IRQ);
-	io_conf.mode = GPIO_MODE_INPUT;
-	io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-	gpio_config(&io_conf);
-
-	gpio_evt_queue = xQueueCreate(3, sizeof(uint32_t));
-
-	xTaskCreate(monitor_buttons, "monitor_buttons", 1024 * 4, (void* )0, 3, NULL);
-
-	gpio_install_isr_service(0);
-	gpio_isr_handler_add(USER_BTN, gpio_isr_handler, (void*)USER_BTN);
-	gpio_isr_handler_add(PMIC_IRQ, gpio_isr_handler, (void*)PMIC_IRQ);
-}
-
-struct pvt_record {
-	uint32_t timestamp;
-	int32_t lon_semis;
-	int32_t lat_semis;
-	uint32_t acc;
-};
-
-#define MAIN_SERVICE_CMD_BATTERY_VOLTAGE SERVICE_CMD_LOCAL(1)
-
 static void main_service_fn(void *param);
 struct service main_service = {
 	.name = "main",
@@ -240,30 +96,6 @@ struct service main_service = {
 void main_service_fn(void *param)
 {
 	struct service *service = (struct service *)param;
-	int ret;
-
-	exit_flags = xEventGroupCreate();
-
-	i2c_init();
-
-	axp192_init(&axp);
-	setup_battery_charger();
-
-	// Flash LED
-	set_chgled(LED_MODE_MANUAL_1HZ);
-
-	// Power off everything we don't need
-	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC1, false);
-	axp192_set_rail_state(&axp, AXP192_RAIL_DCDC2, false);
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, false);
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
-	axp192_set_rail_state(&axp, AXP192_RAIL_EXTEN, false);
-
-	setup_buttons();
-
-	vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-	set_chgled(LED_MODE_AUTO);
 
 	service_register(&accel_service);
 	service_register(&gps_service);
@@ -282,17 +114,12 @@ void main_service_fn(void *param)
 		case SERVICE_CMD_STOP:
 			service_stop(&gps_service);
 			service_stop(&accel_service);
-
-			power_off();
 			break;
 		case SERVICE_CMD_PAUSE:
 
 			break;
 		case SERVICE_CMD_RESUME:
 
-			break;
-		case MAIN_SERVICE_CMD_BATTERY_VOLTAGE:
-			printf("Battery: %2.3f V\n", (float)smsg.arg / 1000.0);
 			break;
 		default:
 			// Unknown command
@@ -306,18 +133,19 @@ void main_service_fn(void *param)
 
 void app_main(void)
 {
-	int i, ret;
-
 	printf("Hello world!\n");
 
+	gpio_handler_init();
+
 	service_register(&main_service);
+	service_register(&pmic_service);
+	service_start(&pmic_service);
+	service_sync(&pmic_service);
 	service_start(&main_service);
 	service_sync(&main_service);
 
-	struct service_message smsg = {
-		.cmd = MAIN_SERVICE_CMD_BATTERY_VOLTAGE,
-	};
-	for (i = 0; !xEventGroupGetBits(exit_flags); i++) {
+	while (1) {
+		/*
 		float battvolt;
 
 		axp192_read(&axp, AXP192_BATTERY_VOLTAGE, &battvolt);
@@ -327,8 +155,7 @@ void app_main(void)
 		service_sync(&main_service);
 
 		vTaskDelay(500 / portTICK_PERIOD_MS);
+		*/
+		vTaskDelay(portMAX_DELAY);
 	}
-
-	service_stop(&main_service);
-	service_sync(&main_service);
 }
