@@ -228,11 +228,19 @@ struct pvt_record {
 	uint32_t acc;
 };
 
-void app_main(void)
-{
-	int i, ret;
+#define MAIN_SERVICE_CMD_BATTERY_VOLTAGE SERVICE_CMD_LOCAL(1)
 
-	printf("Hello world!\n");
+static void main_service_fn(void *param);
+struct service main_service = {
+	.name = "main",
+	.fn = main_service_fn,
+	.priority = 1,
+};
+
+void main_service_fn(void *param)
+{
+	struct service *service = (struct service *)param;
+	int ret;
 
 	exit_flags = xEventGroupCreate();
 
@@ -260,22 +268,67 @@ void app_main(void)
 	service_register(&accel_service);
 	service_register(&gps_service);
 
-	service_start(&gps_service);
-	service_start(&accel_service);
+	while (1) {
+		struct service_message smsg;
+		if (service_receive_message(service, &smsg, portMAX_DELAY)) {
+			continue;
+		}
 
-	printf("Waiting for GPS to config\n");
-	service_sync(&gps_service);
-	printf("Done\n");
+		switch (smsg.cmd) {
+		case SERVICE_CMD_START:
+			service_start(&gps_service);
+			service_start(&accel_service);
+			break;
+		case SERVICE_CMD_STOP:
+			service_stop(&gps_service);
+			service_stop(&accel_service);
 
+			power_off();
+			break;
+		case SERVICE_CMD_PAUSE:
+
+			break;
+		case SERVICE_CMD_RESUME:
+
+			break;
+		case MAIN_SERVICE_CMD_BATTERY_VOLTAGE:
+			printf("Battery: %2.3f V\n", (float)smsg.arg / 1000.0);
+			break;
+		default:
+			// Unknown command
+			break;
+		}
+
+		// Acknowledge the command
+		service_ack(service);
+	}
+}
+
+void app_main(void)
+{
+	int i, ret;
+
+	printf("Hello world!\n");
+
+	service_register(&main_service);
+	service_start(&main_service);
+	service_sync(&main_service);
+
+	struct service_message smsg = {
+		.cmd = MAIN_SERVICE_CMD_BATTERY_VOLTAGE,
+	};
 	for (i = 0; !xEventGroupGetBits(exit_flags); i++) {
 		float battvolt;
 
 		axp192_read(&axp, AXP192_BATTERY_VOLTAGE, &battvolt);
-		printf("Battery Voltage: %2.3f V\n", battvolt);
+		smsg.arg = battvolt * 1000;
 
-		fflush(stdout);
+		service_send_message(&main_service, &smsg, 0);
+		service_sync(&main_service);
+
 		vTaskDelay(500 / portTICK_PERIOD_MS);
 	}
 
-	power_off();
+	service_stop(&main_service);
+	service_sync(&main_service);
 }
