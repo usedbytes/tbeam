@@ -105,12 +105,16 @@ void main_service_fn(void *param)
 
 		switch (smsg.cmd) {
 		case SERVICE_CMD_START:
-			service_start(&gps_service);
+			service_start(&pmic_service);
+			service_sync(&pmic_service);
+
 			service_start(&accel_service);
+			service_start(&gps_service);
 			break;
 		case SERVICE_CMD_STOP:
 			service_stop(&gps_service);
 			service_stop(&accel_service);
+			service_stop(&pmic_service);
 			break;
 		case SERVICE_CMD_PAUSE:
 
@@ -138,11 +142,6 @@ void app_main(void)
 	service_register(&pmic_service);
 	service_register(&accel_service);
 	service_register(&gps_service);
-
-	// TODO: Once services request power from pmic_service, this can
-	// move into main_service START.
-	service_start(&pmic_service);
-	service_sync(&pmic_service);
 
 	service_start(&main_service);
 	service_sync(&main_service);

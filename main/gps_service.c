@@ -18,13 +18,12 @@
 #include "gps.h"
 #include "ubx.h"
 #include "gps_service.h"
+#include "pmic_service.h"
 
 #define TAG "GPS SERVICE"
 
 #define GPS_UART_TXD (GPIO_NUM_12)
 #define GPS_UART_RXD (GPIO_NUM_34)
-
-extern const axp192_t axp;
 
 static void gps_service_fn(void *param);
 
@@ -33,16 +32,6 @@ struct service gps_service = {
 	.fn = gps_service_fn,
 	.priority = 1,
 };
-
-static void cycle_gps_power(bool on)
-{
-	axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
-	axp192_set_rail_millivolts(&axp, AXP192_RAIL_LDO3, 3300);
-
-	if (on) {
-		axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
-	}
-}
 
 #define GPS_SERVICE_UART_READ_CMD SERVICE_CMD_LOCAL(1)
 
@@ -80,7 +69,10 @@ static void uart_event_handler(void *param)
 static void gps_service_fn(void *param)
 {
 	struct service *service = (struct service *)param;
+	struct service *pmic_service = service_lookup("pmic");
 	int ret;
+
+	assert(pmic_service);
 
 	struct uart_ctx *ctx = calloc(1, sizeof(*ctx));
 	ctx->service = service;
@@ -109,18 +101,19 @@ static void gps_service_fn(void *param)
 
 		switch (smsg.cmd) {
 		case SERVICE_CMD_START:
-			cycle_gps_power(true);
+			pmic_request_rail(pmic_service, AXP192_RAIL_LDO3, 3300);
+			service_sync(pmic_service);
 			ret = gps_set_ubx_protocol(gps);
 			if (ret) {
 				ESP_LOGE(TAG, "Failed to set UBX protocol: %d\n", ret);
-				cycle_gps_power(false);
+				pmic_release_rail(pmic_service, AXP192_RAIL_LDO3);
 				break;
 			}
 
 			ret = gps_set_message_rate(gps, UBX_MSG_CLASS_NAV, UBX_MSG_ID_NAV_PVT, 1);
 			if (ret) {
 				ESP_LOGE(TAG, "Failed to set NAV_PVT rate: %d\n", ret);
-				cycle_gps_power(false);
+				pmic_release_rail(pmic_service, AXP192_RAIL_LDO3);
 				break;
 			}
 
@@ -129,7 +122,7 @@ static void gps_service_fn(void *param)
 			break;
 		case SERVICE_CMD_STOP:
 			xEventGroupClearBits(ctx->flags, 1);
-			cycle_gps_power(false);
+			pmic_release_rail(pmic_service, AXP192_RAIL_LDO3);
 			state = POWERED_OFF;
 			break;
 		case SERVICE_CMD_PAUSE:

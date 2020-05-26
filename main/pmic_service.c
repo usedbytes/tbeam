@@ -21,6 +21,14 @@
 
 #define PMIC_IRQ       (GPIO_NUM_35)
 
+#define PMIC_CMD_SCOPE SERVICE_SCOPE('p', 'm')
+#define PMIC_CMD(_arg) SERVICE_CMD(PMIC_CMD_SCOPE, _arg)
+
+#define PMIC_CMD_REQUEST_RAIL PMIC_CMD(1)
+#define PMIC_CMD_REQUEST_RAIL_ARG(_rail, _millivolts) ((((_millivolts) & 0xffff) << 16) | ((_rail) & 0xffff))
+
+#define PMIC_CMD_RELEASE_RAIL PMIC_CMD(2)
+
 static void pmic_service_fn(void *param);
 
 struct service pmic_service = {
@@ -92,6 +100,8 @@ static void pmic_service_fn(void *param)
 	struct service *service = (struct service *)param;
 	uint8_t irqmask[5] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 	uint8_t irqstatus[5] = { 0 };
+	// TODO: DCDC3 should be always on - how to handle that?
+	uint8_t rail_refs[AXP192_RAIL_COUNT] = { 0 };
 	gpio_config_t io_conf;
 
 	i2c_init();
@@ -166,6 +176,32 @@ static void pmic_service_fn(void *param)
 				}
 			}
 			break;
+		case PMIC_CMD_REQUEST_RAIL:
+		{
+			axp192_rail_t rail = smsg.arg & 0xffff;
+
+			rail_refs[rail]++;
+			assert(rail_refs[rail] > 0);
+
+			if (rail_refs[rail] == 1) {
+				// First requestor gets to set the voltage. Probably OK.
+				axp192_set_rail_millivolts(&axp, rail, smsg.arg >> 16);
+				axp192_set_rail_state(&axp, rail, true);
+			}
+			break;
+		}
+		case PMIC_CMD_RELEASE_RAIL:
+		{
+			axp192_rail_t rail = smsg.arg & 0xffff;
+
+			assert(rail_refs[rail] > 0);
+			rail_refs[rail]--;
+
+			if (rail_refs[rail] == 0) {
+				axp192_set_rail_state(&axp, rail, false);
+			}
+			break;
+		}
 		default:
 			// Unknown command
 			break;
@@ -174,4 +210,24 @@ static void pmic_service_fn(void *param)
 		// Acknowledge the command
 		service_ack(service);
 	}
+}
+
+int pmic_request_rail(struct service *service, axp192_rail_t rail, uint16_t millivolts)
+{
+	struct service_message smsg = {
+		.cmd = PMIC_CMD_REQUEST_RAIL,
+		.arg = PMIC_CMD_REQUEST_RAIL_ARG(rail, millivolts),
+	};
+
+	return service_send_message(service, &smsg, 0);
+}
+
+int pmic_release_rail(struct service *service, axp192_rail_t rail)
+{
+	struct service_message smsg = {
+		.cmd = PMIC_CMD_RELEASE_RAIL,
+		.arg = rail,
+	};
+
+	return service_send_message(service, &smsg, 0);
 }
