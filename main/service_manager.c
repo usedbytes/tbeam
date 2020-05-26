@@ -20,7 +20,7 @@ struct __node services = {
 };
 
 struct service {
-	struct __node node;
+	struct __node node; // Keep node as first element
 	char name[32];
 
 	QueueHandle_t cmdq;
@@ -29,7 +29,10 @@ struct service {
 	volatile uint32_t processed;
 
 	TaskHandle_t task;
+	uint32_t stack_depth;
 };
+
+#define for_each_service(_s) for (_s = (struct service *)services.next; _s != NULL; _s = (struct service *)_s->node.next)
 
 static void add_service(struct service *service)
 {
@@ -77,6 +80,8 @@ struct service *service_register(const char *name, void (*fn)(void *self), UBase
 	service->sent = 0;
 	service->processed = 0;
 	vPortCPUInitializeMutex(&service->lock);
+
+	service->stack_depth = stack_depth;
 
 	ret = xTaskCreatePinnedToCore(fn, service->name, stack_depth, service, priority, &service->task, 1);
 	if (ret != pdPASS) {
@@ -187,5 +192,24 @@ void service_sync(const struct service *service)
 		vTaskDelay(1);
 		sent = service->sent;
 		processed = service->processed;
+	}
+}
+
+static void __service_dump_stats(struct service *service)
+{
+	UBaseType_t watermark;
+	printf("Service '%s':\n", service->name);
+	watermark = uxTaskGetStackHighWaterMark(service->task);
+	printf("    Stack high mark: %d / %d words used\n", service->stack_depth - watermark, service->stack_depth);
+}
+
+void service_dump_stats(struct service *service)
+{
+	if (service) {
+		__service_dump_stats(service);
+	} else {
+		for_each_service(service) {
+			__service_dump_stats(service);
+		}
 	}
 }

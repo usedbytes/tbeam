@@ -137,8 +137,16 @@ void app_main(void)
 
 	struct service *main_service = service_register("main", main_service_fn, 1, 4096);
 
+	service_dump_stats(NULL);
+
 	service_start(main_service);
 	service_sync(main_service);
+
+	while (1) {
+		vTaskDelay(10000 / portTICK_PERIOD_MS);
+
+		service_dump_stats(NULL);
+	}
 
 	// All handled by service tasks now.
 }

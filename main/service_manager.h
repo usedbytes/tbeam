@@ -42,4 +42,6 @@ void service_sync(const struct service *service);
 // For use by service "fn" routines only
 void service_ack(struct service *service);
 
+void service_dump_stats(struct service *service);
+
 #endif /* __SERVICE_MANAGER_H__ */
