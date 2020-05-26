@@ -212,4 +212,11 @@ void service_dump_stats(struct service *service)
 			__service_dump_stats(service);
 		}
 	}
+
+#if configGENERATE_RUN_TIME_STATS
+	// XXX: "Approximately 40 bytes per task should be sufficient." (measured 44)
+	static char statsbuf[4096];
+	vTaskGetRunTimeStats(statsbuf);
+	printf("%s\n", statsbuf);
+#endif
 }
