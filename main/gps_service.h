@@ -6,6 +6,6 @@
 
 #include "service_manager.h"
 
-extern struct service gps_service;
+struct service *gps_service_register();
 
 #endif /* __GPS_SERVICE_H__ */

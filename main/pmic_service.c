@@ -31,11 +31,9 @@
 
 static void pmic_service_fn(void *param);
 
-struct service pmic_service = {
-	.name = "pmic",
-	.fn = pmic_service_fn,
-	.priority = 1,
-};
+struct service *pmic_service_register() {
+	return service_register("pmic", pmic_service_fn, 1, 4096);
+}
 
 // These match the register definition.
 enum led_mode {

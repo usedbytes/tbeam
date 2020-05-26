@@ -16,11 +16,10 @@
 #define ACCEL_SERVICE_SAMPLE_CMD SERVICE_CMD_LOCAL(1)
 
 static void accel_service_fn(void *param);
-struct service accel_service = {
-	.name = "accelerometer",
-	.fn = accel_service_fn,
-	.priority = configMAX_PRIORITIES - 1,
-};
+struct service *accel_service_register()
+{
+	return service_register("accelerometer", accel_service_fn, configMAX_PRIORITIES - 1, 4096);
+}
 
 static void setup_adc()
 {

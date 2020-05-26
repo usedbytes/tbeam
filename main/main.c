@@ -86,16 +86,15 @@
  * N_OE is floating
  */
 
-static void main_service_fn(void *param);
-struct service main_service = {
-	.name = "main",
-	.fn = main_service_fn,
-	.priority = 1,
-};
-
 void main_service_fn(void *param)
 {
 	struct service *service = (struct service *)param;
+
+	gpio_handler_init();
+
+	struct service *pmic_service = pmic_service_register();
+	struct service *accel_service = accel_service_register();
+	struct service *gps_service = gps_service_register();
 
 	while (1) {
 		struct service_message smsg;
@@ -105,16 +104,16 @@ void main_service_fn(void *param)
 
 		switch (smsg.cmd) {
 		case SERVICE_CMD_START:
-			service_start(&pmic_service);
-			service_sync(&pmic_service);
+			service_start(pmic_service);
+			service_sync(pmic_service);
 
-			service_start(&accel_service);
-			service_start(&gps_service);
+			service_start(accel_service);
+			service_start(gps_service);
 			break;
 		case SERVICE_CMD_STOP:
-			service_stop(&gps_service);
-			service_stop(&accel_service);
-			service_stop(&pmic_service);
+			service_stop(gps_service);
+			service_stop(accel_service);
+			service_stop(pmic_service);
 			break;
 		case SERVICE_CMD_PAUSE:
 
@@ -136,15 +135,10 @@ void app_main(void)
 {
 	printf("Hello world!\n");
 
-	gpio_handler_init();
+	struct service *main_service = service_register("main", main_service_fn, 1, 4096);
 
-	service_register(&main_service);
-	service_register(&pmic_service);
-	service_register(&accel_service);
-	service_register(&gps_service);
-
-	service_start(&main_service);
-	service_sync(&main_service);
+	service_start(main_service);
+	service_sync(main_service);
 
 	// All handled by service tasks now.
 }

@@ -6,6 +6,6 @@
 
 #include "service_manager.h"
 
-extern struct service accel_service;
+struct service *accel_service_register();
 
 #endif /* __ACCEL_SERVICE_H__ */

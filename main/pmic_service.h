@@ -7,8 +7,7 @@
 #include "axp192.h"
 #include "service_manager.h"
 
-extern struct service pmic_service;
-
+struct service *pmic_service_register();
 
 int pmic_request_rail(struct service *service, axp192_rail_t rail, uint16_t millivolts);
 int pmic_release_rail(struct service *service, axp192_rail_t rail);

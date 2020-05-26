@@ -27,11 +27,10 @@
 
 static void gps_service_fn(void *param);
 
-struct service gps_service = {
-	.name = "gps",
-	.fn = gps_service_fn,
-	.priority = 1,
-};
+struct service *gps_service_register()
+{
+	return service_register("gps", gps_service_fn, 1, 4096);
+}
 
 #define GPS_SERVICE_UART_READ_CMD SERVICE_CMD_LOCAL(1)
 

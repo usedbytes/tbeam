@@ -6,23 +6,6 @@
 
 #include <stdint.h>
 
-struct __node {
-	struct __node *next;
-};
-
-struct service {
-	const char *name;
-	void (*fn)(void *pvParameter);
-	UBaseType_t priority;
-
-	// Internal
-	struct __node node;
-	QueueHandle_t cmdq;
-	portMUX_TYPE lock;
-	volatile uint32_t sent;
-	volatile uint32_t processed;
-};
-
 #define SERVICE_SCOPE(_a, _b)       ((((_a) & 0xff) << 8) | ((_b) & 0xff))
 #define SERVICE_CMD(_scope, _cmd)   (((_scope) << 16) | (_cmd))
 #define SERVICE_CMD_GLOBAL(_cmd)    SERVICE_CMD(0, _cmd)
@@ -33,12 +16,14 @@ struct service {
 #define SERVICE_CMD_PAUSE  SERVICE_CMD_GLOBAL(2)
 #define SERVICE_CMD_RESUME SERVICE_CMD_GLOBAL(3)
 
+struct service;
+
 struct service_message {
 	uint32_t cmd;
 	uint32_t arg;
 };
 
-int service_register(struct service *service);
+struct service *service_register(const char *name, void (*fn)(void *self), UBaseType_t priority, uint32_t stack_depth);
 struct service *service_lookup(const char *name);
 
 int service_send_message_from_isr(struct service *service, const struct service_message *smsg,

@@ -11,8 +11,24 @@
 
 #define container_of(ptr, type, member) (type *)((char *)(ptr) - offsetof(type, member))
 
+struct __node {
+	struct __node *next;
+};
+
 struct __node services = {
 	.next = NULL,
+};
+
+struct service {
+	struct __node node;
+	char name[32];
+
+	QueueHandle_t cmdq;
+	portMUX_TYPE lock;
+	volatile uint32_t sent;
+	volatile uint32_t processed;
+
+	TaskHandle_t task;
 };
 
 static void add_service(struct service *service)
@@ -40,11 +56,18 @@ static struct service *find_service(const char *name)
 	return NULL;
 }
 
-int service_register(struct service *service)
+struct service *service_register(const char *name, void (*fn)(void *self), UBaseType_t priority, uint32_t stack_depth)
 {
 	BaseType_t ret;
+	struct service *service = calloc(1, sizeof(*service));
+	if (!service) {
+		return NULL;
+	}
 
-	assert(service->cmdq == 0);
+	if (strlen(name) > sizeof(service->name) - 1) {
+		return NULL;
+	}
+	strcpy(service->name, name);
 
 	service->cmdq = xQueueCreate(5, sizeof(struct service_message));
 	if (!service->cmdq) {
@@ -55,19 +78,20 @@ int service_register(struct service *service)
 	service->processed = 0;
 	vPortCPUInitializeMutex(&service->lock);
 
-	ret = xTaskCreatePinnedToCore(service->fn, service->name, 4096, service, service->priority, NULL, 1);
+	ret = xTaskCreatePinnedToCore(fn, service->name, stack_depth, service, priority, &service->task, 1);
 	if (ret != pdPASS) {
 		goto fail;
 	}
 
 	add_service(service);
 
-	return 0;
+	return service;
 
 fail:
 	if (service->cmdq)
 		vQueueDelete(service->cmdq);
-	return -1;
+	free(service);
+	return NULL;
 }
 
 struct service *service_lookup(const char *name)
