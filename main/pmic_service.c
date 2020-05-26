@@ -180,7 +180,6 @@ static void pmic_service_fn(void *param)
 
 			rail_refs[rail]++;
 			assert(rail_refs[rail] > 0);
-
 			if (rail_refs[rail] == 1) {
 				// First requestor gets to set the voltage. Probably OK.
 				axp192_set_rail_millivolts(&axp, rail, smsg.arg >> 16);

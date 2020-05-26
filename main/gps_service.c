@@ -102,6 +102,7 @@ static void gps_service_fn(void *param)
 		case SERVICE_CMD_START:
 			pmic_request_rail(pmic_service, AXP192_RAIL_LDO3, 3300);
 			service_sync(pmic_service);
+
 			ret = gps_set_ubx_protocol(gps);
 			if (ret) {
 				ESP_LOGE(TAG, "Failed to set UBX protocol: %d\n", ret);

@@ -6,7 +6,11 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include "esp_log.h"
+
 #include "gps.h"
+
+#define TAG "gps"
 
 struct gps_ctx {
 	uart_port_t uart;
@@ -134,6 +138,7 @@ int gps_set_ubx_protocol(struct gps_ctx *gps)
 			break;
 		} else if (ret != -ETIMEDOUT) {
 			// Unexpected error
+			ESP_LOGE(TAG, "%s: Unexpected error %d\n", __func__, ret);
 			break;
 		}
 	}
