@@ -2,25 +2,21 @@
 // Copyright (c) 2020 Brian Starkey <stark3y@gmail.com>
 
 #include <string.h>
+#include <stdbool.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 
+#include "list.h"
 #include "service_manager.h"
 
-#define container_of(ptr, type, member) (type *)((char *)(ptr) - offsetof(type, member))
-
-struct __node {
-	struct __node *next;
-};
-
-struct __node services = {
+struct list_node services = {
 	.next = NULL,
 };
 
 struct service {
-	struct __node node; // Keep node as first element
+	struct list_node node; // Keep node as first element
 	char name[32];
 
 	QueueHandle_t cmdq;
@@ -32,31 +28,28 @@ struct service {
 	uint32_t stack_depth;
 };
 
-#define for_each_service(_s) for (_s = (struct service *)services.next; _s != NULL; _s = (struct service *)_s->node.next)
+#define for_each_service(_s) list_for_each(&services, struct service, node, _s)
 
 static void add_service(struct service *service)
 {
-	struct __node *n = &services;
-	while (n->next != NULL) {
-		n = n->next;
+	list_add_tail(&services, &service->node);
+}
+
+static bool __match_service(struct list_node *node, void *data)
+{
+	struct service *service = container_of(node, struct service, node);
+	const char *name = (const char *)data;
+
+	if (!strcmp(name, service->name)) {
+		return true;
 	}
-	n->next = &service->node;
+
+	return false;
 }
 
 static struct service *find_service(const char *name)
 {
-	struct __node *n = &services;
-	struct service *service;
-
-	while (n->next != NULL) {
-		n = n->next;
-		service = container_of(n, struct service, node);
-		if (!strcmp(name, service->name)) {
-			return service;
-		}
-	}
-
-	return NULL;
+	return (struct service *)list_find(&services, __match_service, (void *)name);
 }
 
 struct service *service_register(const char *name, void (*fn)(void *self), UBaseType_t priority, uint32_t stack_depth)
