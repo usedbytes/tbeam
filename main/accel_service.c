@@ -2,16 +2,25 @@
 // Copyright (c) 2020 Brian Starkey <stark3y@gmail.com>
 
 #include <stdint.h>
-#include <stdio.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+
+#include "esp_log.h"
 
 #include "driver/gpio.h"
 #include "driver/adc.h"
 #include "driver/timer.h"
 
 #include "accel_service.h"
+
+#define TAG "accel_service"
+
+#define ACCEL_VCC_PIN        (GPIO_NUM_25)
+// XXX: These axes are probably not in the right order.
+#define ACCEL_ADC_CHANNEL_X  (ADC1_CHANNEL_0)
+#define ACCEL_ADC_CHANNEL_Y  (ADC1_CHANNEL_1)
+#define ACCEL_ADC_CHANNEL_Z  (ADC1_CHANNEL_3)
 
 #define ACCEL_SERVICE_SAMPLE_CMD SERVICE_CMD_LOCAL(1)
 
@@ -24,9 +33,9 @@ struct service *accel_service_register()
 static void setup_adc()
 {
 	adc1_config_width(ADC_WIDTH_BIT_12);
-	adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_DB_11);
-	adc1_config_channel_atten(ADC1_CHANNEL_1, ADC_ATTEN_DB_11);
-	adc1_config_channel_atten(ADC1_CHANNEL_3, ADC_ATTEN_DB_11);
+	adc1_config_channel_atten(ACCEL_ADC_CHANNEL_X, ADC_ATTEN_DB_11);
+	adc1_config_channel_atten(ACCEL_ADC_CHANNEL_Y, ADC_ATTEN_DB_11);
+	adc1_config_channel_atten(ACCEL_ADC_CHANNEL_Z, ADC_ATTEN_DB_11);
 }
 
 // Approach derived from https://esp32.com/viewtopic.php?t=1341
@@ -78,13 +87,13 @@ static void accel_service_fn(void *param)
 
 	gpio_config_t io_conf = {
 		.intr_type = GPIO_INTR_DISABLE,
-		.pin_bit_mask = (1ULL << GPIO_NUM_25),
+		.pin_bit_mask = (1ULL << ACCEL_VCC_PIN),
 		.mode = GPIO_MODE_OUTPUT,
 		.pull_up_en = GPIO_PULLUP_DISABLE,
 		.pull_down_en = GPIO_PULLDOWN_DISABLE,
 	};
 	gpio_config(&io_conf);
-	gpio_set_drive_capability(GPIO_NUM_25, GPIO_DRIVE_CAP_1);
+	gpio_set_drive_capability(ACCEL_VCC_PIN, GPIO_DRIVE_CAP_1);
 
 	timer_config_t config = {
 		.divider = 16,
@@ -120,12 +129,12 @@ static void accel_service_fn(void *param)
 		case SERVICE_CMD_PAUSE:
 			timer_pause(TIMER_GROUP_0, TIMER_0);
 			timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0);
-			gpio_set_level(GPIO_NUM_25, 0);
+			gpio_set_level(ACCEL_VCC_PIN, 0);
 			state = STOPPED;
 			break;
 		case SERVICE_CMD_START:
 		case SERVICE_CMD_RESUME:
-			gpio_set_level(GPIO_NUM_25, 1);
+			gpio_set_level(ACCEL_VCC_PIN, 1);
 			timer_start(TIMER_GROUP_0, TIMER_0);
 			state = RUNNING;
 			break;
@@ -133,14 +142,14 @@ static void accel_service_fn(void *param)
 			if (state != RUNNING) {
 				break;
 			}
-			samples[0][idx] = adc1_get_raw(ADC1_CHANNEL_0);
-			samples[1][idx] = adc1_get_raw(ADC1_CHANNEL_1);
-			samples[2][idx] = adc1_get_raw(ADC1_CHANNEL_3);
+			samples[0][idx] = adc1_get_raw(ACCEL_ADC_CHANNEL_X);
+			samples[1][idx] = adc1_get_raw(ACCEL_ADC_CHANNEL_Y);
+			samples[2][idx] = adc1_get_raw(ACCEL_ADC_CHANNEL_Z);
 
 			idx++;
 			if (idx == 16) {
-				printf("%5d, %5d, %5d\n", calc_variance(samples[0], 16),
-				       calc_variance(samples[1], 16), calc_variance(samples[2], 16));
+				ESP_LOGI(TAG, "%5d, %5d, %5d\n", calc_variance(samples[0], 16),
+				         calc_variance(samples[1], 16), calc_variance(samples[2], 16));
 				idx = 0;
 			}
 			break;

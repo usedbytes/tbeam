@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2020 Brian Starkey <stark3y@gmail.com>
-// Portions Copyright (c) 2018 Manuel Bleichenbacher
-//    From ttn-esp32 example: https://github.com/manuelbl/ttn-esp32/blob/master/examples/hello_world/main/main.cpp
 
 #include <stdio.h>
 #include <stdbool.h>
@@ -42,10 +40,7 @@
 #include "gps_service.h"
 #include "pmic_service.h"
 
-#define TAG "FOO"
-
-#define GPS_UART_TXD (GPIO_NUM_12)
-#define GPS_UART_RXD (GPIO_NUM_34)
+#define TAG "main"
 
 #define LORA_SCK     (GPIO_NUM_5)
 #define LORA_MISO    (GPIO_NUM_19)
@@ -55,13 +50,6 @@
 #define LORA_DIO1     (GPIO_NUM_33)
 #define LORA_DIO2     (GPIO_NUM_32)
 #define LORA_RST     (GPIO_NUM_23)
-
-#define AXP192_I2C_SDA (GPIO_NUM_21)
-#define AXP192_I2C_SCL (GPIO_NUM_22)
-#define AXP192_IRQ     (GPIO_NUM_35)
-
-#define USER_BTN       (GPIO_NUM_38)
-#define PMIC_IRQ       (GPIO_NUM_35)
 
 #define HEADER_VOLTAGE_RAIL AXP192_RAIL_DCDC1
 #define ESP32_VOLTAGE_RAIL  AXP192_RAIL_DCDC3
@@ -133,7 +121,7 @@ void main_service_fn(void *param)
 
 void app_main(void)
 {
-	printf("Hello world!\n");
+	ESP_LOGI(TAG, "Hello world!\n");
 
 	struct service *main_service = service_register("main", main_service_fn, 1, 4096);
 

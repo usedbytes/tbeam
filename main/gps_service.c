@@ -20,7 +20,7 @@
 #include "gps_service.h"
 #include "pmic_service.h"
 
-#define TAG "GPS SERVICE"
+#define TAG "gps_service"
 
 #define GPS_UART_TXD (GPIO_NUM_12)
 #define GPS_UART_RXD (GPIO_NUM_34)
