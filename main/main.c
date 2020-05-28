@@ -84,6 +84,8 @@ void main_service_fn(void *param)
 	struct service *accel_service = accel_service_register();
 	struct service *gps_service = gps_service_register();
 
+	gps_subscribe_lock_status(gps_service, service);
+
 	while (1) {
 		struct service_message smsg;
 		if (service_receive_message(service, &smsg, portMAX_DELAY)) {
@@ -108,6 +110,9 @@ void main_service_fn(void *param)
 			break;
 		case SERVICE_CMD_RESUME:
 
+			break;
+		case GPS_CMD_LOCK_STATUS:
+			printf("GPS %s\n", smsg.arg ? "locked" : "not locked");
 			break;
 		default:
 			// Unknown command

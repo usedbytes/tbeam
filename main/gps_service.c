@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2020 Brian Starkey <stark3y@gmail.com>
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -16,6 +17,7 @@
 
 #include "axp192.h"
 #include "gps.h"
+#include "list.h"
 #include "ubx.h"
 #include "gps_service.h"
 #include "pmic_service.h"
@@ -24,6 +26,12 @@
 
 #define GPS_UART_TXD (GPIO_NUM_12)
 #define GPS_UART_RXD (GPIO_NUM_34)
+
+#define GPS_CMD_SCOPE SERVICE_SCOPE('g', 'p')
+#define GPS_CMD(_x)   SERVICE_CMD(GPS_CMD_SCOPE, _x)
+
+#define GPS_CMD_SUBSCRIBE_LOCK_STATUS   GPS_CMD(1)
+#define GPS_CMD_UNSUBSCRIBE_LOCK_STATUS GPS_CMD(2)
 
 static void gps_service_fn(void *param);
 
@@ -65,6 +73,31 @@ static void uart_event_handler(void *param)
 	}
 }
 
+struct gps_subscriber {
+	struct list_node node;
+	struct service *service;
+};
+
+static bool match_subscriber(struct list_node *node, void *data)
+{
+	struct gps_subscriber *entry = (struct gps_subscriber *)node;
+
+	return entry->service == (struct service *)data;
+}
+
+static void notify_subscribers_lock_status(struct list_node *subs, uint32_t status)
+{
+	struct gps_subscriber *sub;
+	struct service_message smsg = {
+		.cmd = GPS_CMD_LOCK_STATUS,
+		.arg = status,
+	};
+
+	list_for_each(subs, struct gps_subscriber, node, sub) {
+		service_send_message(sub->service, &smsg, 0);
+	}
+}
+
 static void gps_service_fn(void *param)
 {
 	struct service *service = (struct service *)param;
@@ -79,6 +112,10 @@ static void gps_service_fn(void *param)
 
 	struct gps_ctx *gps = gps_init(UART_NUM_1, GPS_UART_TXD, GPS_UART_RXD, &ctx->uart_queue);
 
+	struct list_node lock_subs = {
+		.next = NULL,
+	};
+
 	// We monitor for UART activity using a high priority task which should
 	// get woken directly from the UART IRQ handler. It's not ideal, but
 	// the overhead shouldn't be too awful, hopefully.
@@ -89,7 +126,8 @@ static void gps_service_fn(void *param)
 	enum state {
 		POWERED_OFF = 0,
 		CONFIGURED = 1,
-		RUNNING = 2,
+		ACQUISITION = 2,
+		TRACKING = 3,
 	} state = POWERED_OFF;
 
 	while (1) {
@@ -118,7 +156,7 @@ static void gps_service_fn(void *param)
 			}
 
 			xEventGroupSetBits(ctx->flags, 1);
-			state = RUNNING;
+			state = ACQUISITION;
 			break;
 		case SERVICE_CMD_STOP:
 			xEventGroupClearBits(ctx->flags, 1);
@@ -138,9 +176,40 @@ static void gps_service_fn(void *param)
 			    msg->hdr.class == UBX_MSG_CLASS_NAV &&
 			    msg->hdr.id == UBX_MSG_ID_NAV_PVT) {
 				struct ubx_nav_pvt *pvt = (struct ubx_nav_pvt *)msg;
+
+				if ((state != TRACKING) && (pvt->flags & 1)) {
+					state = TRACKING;
+					notify_subscribers_lock_status(&lock_subs, 1);
+				} else if ((state == TRACKING) && !(pvt->flags & 1)) {
+					state = ACQUISITION;
+					notify_subscribers_lock_status(&lock_subs, 0);
+				}
+
 				ubx_print_nav_pvt(pvt);
 				ubx_free(msg);
 			}
+			break;
+		}
+		case GPS_CMD_SUBSCRIBE_LOCK_STATUS:
+		{
+			struct gps_subscriber *sub = calloc(1, sizeof(*sub));
+			if (!sub) {
+				break;
+			}
+			sub->service = (struct service *)smsg.arg;
+			list_add_tail(&lock_subs, &sub->node);
+			break;
+		}
+		case GPS_CMD_UNSUBSCRIBE_LOCK_STATUS:
+		{
+			struct list_node *node = list_find(&lock_subs, match_subscriber, (void *)smsg.arg);
+			if (!node) {
+				break;
+			}
+			list_del(&lock_subs, node);
+
+			struct gps_subscriber *sub = container_of(node, struct gps_subscriber, node);
+			free(sub);
 			break;
 		}
 		default:
@@ -151,4 +220,24 @@ static void gps_service_fn(void *param)
 		// Acknowledge the command
 		service_ack(service);
 	}
+}
+
+int gps_subscribe_lock_status(struct service *service, struct service *subscriber)
+{
+	struct service_message smsg = {
+		.cmd = GPS_CMD_SUBSCRIBE_LOCK_STATUS,
+		.arg = (uint32_t)subscriber,
+	};
+
+	return service_send_message(service, &smsg, 0);
+}
+
+int gps_unsubscribe_lock_status(struct service *service, struct service *subscriber)
+{
+	struct service_message smsg = {
+		.cmd = GPS_CMD_UNSUBSCRIBE_LOCK_STATUS,
+		.arg = (uint32_t)subscriber,
+	};
+
+	return service_send_message(service, &smsg, 0);
 }
