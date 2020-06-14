@@ -39,6 +39,7 @@
 #include "accel_service.h"
 #include "gps_service.h"
 #include "pmic_service.h"
+#include "network_service.h"
 
 #define TAG "main"
 
@@ -83,6 +84,7 @@ void main_service_fn(void *param)
 	struct service *pmic_service = pmic_service_register();
 	struct service *accel_service = accel_service_register();
 	struct service *gps_service = gps_service_register();
+	struct service *network_service = network_service_register();
 
 	gps_subscribe_lock_status(gps_service, service);
 
@@ -99,8 +101,10 @@ void main_service_fn(void *param)
 
 			service_start(accel_service);
 			service_start(gps_service);
+			service_start(network_service);
 			break;
 		case SERVICE_CMD_STOP:
+			service_stop(network_service);
 			service_stop(gps_service);
 			service_stop(accel_service);
 			service_stop(pmic_service);
