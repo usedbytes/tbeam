@@ -18,8 +18,8 @@
 
 #include "wifi.h"
 
-#define WIFI_SSID      "MYSSID"
-#define WIFI_PASS      "MYPASSWORD"
+#define WIFI_SSID      CONFIG_WIFI_SSID
+#define WIFI_PASS      CONFIG_WIFI_PASSWORD
 
 static const char *TAG = "wifi";
 
