@@ -75,11 +75,28 @@
  * N_OE is floating
  */
 
+static int nvs_init()
+{
+	esp_err_t err = nvs_flash_init();
+	if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+		nvs_flash_erase();
+		err = nvs_flash_init();
+	}
+
+	if (err != ESP_OK) {
+		ESP_LOGE(TAG, "NVS initialisation failed");
+		return -1;
+	}
+
+	return 0;
+}
+
 void main_service_fn(void *param)
 {
 	struct service *service = (struct service *)param;
 
 	gpio_handler_init();
+	nvs_init();
 
 	struct service *pmic_service = pmic_service_register();
 	struct service *accel_service = accel_service_register();
