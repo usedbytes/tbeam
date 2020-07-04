@@ -104,7 +104,7 @@ void service_ack(struct service *service)
 	portEXIT_CRITICAL(&service->lock);
 }
 
-int service_send_message_from_isr(struct service *service, const struct service_message *smsg, BaseType_t *xHigherPriorityTaskWoken)
+int IRAM_ATTR service_send_message_from_isr(struct service *service, const struct service_message *smsg, BaseType_t *xHigherPriorityTaskWoken)
 {
 	BaseType_t ret = xQueueSendToBackFromISR(service->cmdq, smsg, xHigherPriorityTaskWoken);
 	if (ret != pdTRUE) {
