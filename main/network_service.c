@@ -53,7 +53,7 @@ static void network_service_fn(void *param)
 	} state = STOPPED;
 
 #define MAX_RETRIES 5
-	int retry;
+	int retry = 0;
 
 	while (1) {
 		struct service_message smsg;
@@ -93,7 +93,7 @@ static void network_service_fn(void *param)
 				retry = 0;
 				/* Fallthrough */
 			case WIFI_EVENT_STA_DISCONNECTED:
-				if (retry > MAX_RETRIES) {
+				if (retry++ > MAX_RETRIES) {
 					wifi_stop(ctx);
 					ctx = NULL;
 					state = STOPPED;
