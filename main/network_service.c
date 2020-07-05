@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_wifi.h"
 
+#include "list.h"
 #include "network_service.h"
 #include "wifi.h"
 
@@ -16,6 +17,9 @@
 
 #define NETWORK_CMD_WIFI_EVENT SERVICE_CMD_LOCAL(1)
 #define NETWORK_CMD_IP_EVENT   SERVICE_CMD_LOCAL(2)
+
+#define NETWORK_CMD_SUBSCRIBE_NETWORK_STATUS   NETWORK_CMD(1)
+#define NETWORK_CMD_UNSUBSCRIBE_NETWORK_STATUS NETWORK_CMD(2)
 
 static void network_service_fn(void *param);
 struct service *network_service_register()
@@ -40,10 +44,39 @@ static void network_event_handler(void* arg, esp_event_base_t event_base,
 	}
 }
 
+struct network_subscriber {
+	struct list_node node;
+	struct service *service;
+};
+
+static bool match_subscriber(struct list_node *node, void *data)
+{
+	struct network_subscriber *entry = (struct network_subscriber *)node;
+
+	return entry->service == (struct service *)data;
+}
+
+static void notify_subscribers_network_status(struct list_node *subs, uint32_t status)
+{
+	struct network_subscriber *sub;
+	struct service_message smsg = {
+		.cmd = NETWORK_CMD_NETWORK_STATUS,
+		.arg = status,
+	};
+
+	list_for_each(subs, struct network_subscriber, node, sub) {
+		service_send_message(sub->service, &smsg, 0);
+	}
+}
+
 static void network_service_fn(void *param)
 {
 	struct service *service = (struct service *)param;
 	struct wifi_ctx *ctx = NULL;
+
+	struct list_node status_subs = {
+		.next = NULL,
+	};
 
 	enum state {
 		STOPPED,
@@ -66,6 +99,7 @@ static void network_service_fn(void *param)
 			if (state != STOPPED) {
 				wifi_stop(ctx);
 				ctx = NULL;
+				state = STOPPED;
 			}
 			break;
 		case SERVICE_CMD_PAUSE:
@@ -84,6 +118,31 @@ static void network_service_fn(void *param)
 			break;
 		case SERVICE_CMD_RESUME:
 			break;
+
+		case NETWORK_CMD_SUBSCRIBE_NETWORK_STATUS:
+		{
+			struct network_subscriber *sub = calloc(1, sizeof(*sub));
+			if (!sub) {
+				break;
+			}
+			sub->service = (struct service *)smsg.arg;
+			list_add_tail(&status_subs, &sub->node);
+			break;
+		}
+		case NETWORK_CMD_UNSUBSCRIBE_NETWORK_STATUS:
+		{
+			struct list_node *node = list_find(&status_subs, match_subscriber, (void *)smsg.arg);
+			if (!node) {
+				break;
+			}
+			list_del(&status_subs, node);
+
+			struct network_subscriber *sub = container_of(node, struct network_subscriber, node);
+			free(sub);
+			break;
+		}
+
+		// Network-specific events
 		case NETWORK_CMD_WIFI_EVENT:
 			switch ((wifi_event_t)smsg.arg) {
 			case WIFI_EVENT_STA_START:
@@ -91,19 +150,34 @@ static void network_service_fn(void *param)
 					break;
 				}
 				retry = 0;
-				/* Fallthrough */
+				// Fallthrough
 			case WIFI_EVENT_STA_DISCONNECTED:
+				if (state == STOPPED) {
+					// Deliberate, ignore
+					break;
+				}
+
 				if (retry++ > MAX_RETRIES) {
 					wifi_stop(ctx);
 					ctx = NULL;
 					state = STOPPED;
+
+					// Notify listeners that connection failed
+					notify_subscribers_network_status(&status_subs, NETWORK_STATUS_FAILED);
+
 					break;
 				}
 				esp_wifi_connect();
 				state = CONNECTING;
 				break;
+			case WIFI_EVENT_STA_CONNECTED:
+				// Connected but no IP yet
+				break;
+			case WIFI_EVENT_STA_STOP:
+				// This would happen after wifi_stop()
+				break;
 			default:
-				/* Unhandled WiFi event */
+				// Unhandled WiFi event
 				break;
 			}
 			break;
@@ -111,19 +185,13 @@ static void network_service_fn(void *param)
 			switch ((ip_event_t)smsg.arg) {
 			case IP_EVENT_STA_GOT_IP:
 				state = CONNECTED;
-				{
-					esp_netif_t *netif = wifi_get_netif(ctx);
-					esp_netif_ip_info_t ip;
-					esp_err_t err = esp_netif_get_ip_info(netif, &ip);
-					if (err != ESP_OK) {
-						ESP_LOGE(TAG, "Error getting IP info");
-					} else {
-						ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&ip.ip));
-					}
-				}
+				retry = 0;
+
+				// Notify listeners that network is available
+				notify_subscribers_network_status(&status_subs, NETWORK_STATUS_CONNECTED);
 				break;
 			default:
-				/* Unhandled IP event */
+				// Unhandled IP event
 				break;
 			}
 			break;
@@ -135,4 +203,24 @@ static void network_service_fn(void *param)
 		// Acknowledge the command
 		service_ack(service);
 	}
+}
+
+int network_subscribe_network_status(struct service *service, struct service *subscriber)
+{
+	struct service_message smsg = {
+		.cmd = NETWORK_CMD_SUBSCRIBE_NETWORK_STATUS,
+		.arg = (uint32_t)subscriber,
+	};
+
+	return service_send_message(service, &smsg, 0);
+}
+
+int network_unsubscribe_network_status(struct service *service, struct service *subscriber)
+{
+	struct service_message smsg = {
+		.cmd = NETWORK_CMD_UNSUBSCRIBE_NETWORK_STATUS,
+		.arg = (uint32_t)subscriber,
+	};
+
+	return service_send_message(service, &smsg, 0);
 }

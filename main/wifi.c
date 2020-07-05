@@ -111,12 +111,6 @@ error:
 	return NULL;
 }
 
-// XXX: Convenience for prototyping. Should provide higher level APIs later.
-esp_netif_t *wifi_get_netif(struct wifi_ctx *ctx)
-{
-	return ctx->netif;
-}
-
 void wifi_stop(struct wifi_ctx *ctx)
 {
 	esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, ctx->wifi_evt);

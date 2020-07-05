@@ -105,6 +105,8 @@ void main_service_fn(void *param)
 
 	gps_subscribe_lock_status(gps_service, service);
 
+	network_subscribe_network_status(network_service, service);
+
 	while (1) {
 		struct service_message smsg;
 		if (service_receive_message(service, &smsg, portMAX_DELAY)) {
@@ -134,6 +136,13 @@ void main_service_fn(void *param)
 			break;
 		case GPS_CMD_LOCK_STATUS:
 			printf("GPS %s\n", smsg.arg ? "locked" : "not locked");
+			break;
+		case NETWORK_CMD_NETWORK_STATUS:
+			if (smsg.arg == NETWORK_STATUS_CONNECTED) {
+				ESP_LOGI(TAG, "Network is connected!");
+			} else if (smsg.arg == NETWORK_STATUS_FAILED) {
+				ESP_LOGE(TAG, "Network connection failed.");
+			}
 			break;
 		default:
 			// Unknown command
