@@ -20,7 +20,10 @@ struct service;
 
 struct service_message {
 	uint32_t cmd;
-	uint32_t arg;
+	union {
+		uint32_t arg;
+		void *argp;
+	};
 };
 
 struct service *service_register(const char *name, void (*fn)(void *self), UBaseType_t priority, uint32_t stack_depth);

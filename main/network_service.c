@@ -21,6 +21,8 @@
 #define NETWORK_CMD_SUBSCRIBE_NETWORK_STATUS   NETWORK_CMD(1)
 #define NETWORK_CMD_UNSUBSCRIBE_NETWORK_STATUS NETWORK_CMD(2)
 
+#define NETWORK_CMD_TXN_PERFORM    NETWORK_CMD(4)
+
 static void network_service_fn(void *param);
 struct service *network_service_register()
 {
@@ -141,6 +143,23 @@ static void network_service_fn(void *param)
 			free(sub);
 			break;
 		}
+		case NETWORK_CMD_TXN_PERFORM:
+		{
+			struct network_txn *txn = (struct network_txn *)smsg.argp;
+
+			esp_http_client_handle_t client = esp_http_client_init(&txn->cfg);
+			esp_err_t err = esp_http_client_perform(client);
+			if (err == ESP_OK) {
+				txn->result = esp_http_client_get_status_code(client);
+				txn->get.len = esp_http_client_get_content_length(client);
+			}
+			txn->err = err;
+			esp_http_client_cleanup(client);
+
+			smsg.cmd = NETWORK_CMD_TXN_RESULT;
+			service_send_message(txn->sender, &smsg, 0);
+			break;
+		}
 
 		// Network-specific events
 		case NETWORK_CMD_WIFI_EVENT:
@@ -220,6 +239,16 @@ int network_unsubscribe_network_status(struct service *service, struct service *
 	struct service_message smsg = {
 		.cmd = NETWORK_CMD_UNSUBSCRIBE_NETWORK_STATUS,
 		.arg = (uint32_t)subscriber,
+	};
+
+	return service_send_message(service, &smsg, 0);
+}
+
+int network_txn_perform(struct service *service, struct network_txn *txn)
+{
+	struct service_message smsg = {
+		.cmd = NETWORK_CMD_TXN_PERFORM,
+		.argp = txn,
 	};
 
 	return service_send_message(service, &smsg, 0);

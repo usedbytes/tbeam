@@ -140,10 +140,24 @@ void main_service_fn(void *param)
 		case NETWORK_CMD_NETWORK_STATUS:
 			if (smsg.arg == NETWORK_STATUS_CONNECTED) {
 				ESP_LOGI(TAG, "Network is connected!");
+				struct network_txn *txn = calloc(1, sizeof(*txn));
+				if (txn) {
+					txn->sender = service,
+					txn->cfg.url = "http://example.com",
+					network_txn_perform(network_service, txn);
+				}
 			} else if (smsg.arg == NETWORK_STATUS_FAILED) {
 				ESP_LOGE(TAG, "Network connection failed.");
 			}
 			break;
+		case NETWORK_CMD_TXN_RESULT:
+		{
+			struct network_txn *txn = (struct network_txn *)smsg.argp;
+			ESP_LOGI(TAG, "Transaction %s", txn->err == ESP_OK ? "OK" : "FAIL");
+			ESP_LOGI(TAG, "Network transaction result: %d %d", txn->result, txn->get.len);
+			free(txn);
+			break;
+		}
 		default:
 			// Unknown command
 			break;
