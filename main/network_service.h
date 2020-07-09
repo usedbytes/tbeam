@@ -25,6 +25,7 @@ int network_unsubscribe_network_status(struct service *service, struct service *
 
 enum network_txn_type {
 	NETWORK_TXN_POST,
+	NETWORK_TXN_GET,
 };
 
 struct network_txn {

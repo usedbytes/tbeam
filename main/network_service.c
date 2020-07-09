@@ -71,6 +71,42 @@ static void notify_subscribers_network_status(struct list_node *subs, uint32_t s
 	}
 }
 
+esp_err_t perform_txn(struct network_txn *txn)
+{
+	esp_err_t err = ESP_OK;
+	esp_http_client_handle_t client = esp_http_client_init(&txn->cfg);
+
+	switch (txn->type) {
+	case NETWORK_TXN_POST:
+		err = esp_http_client_set_post_field(client, txn->post.data, txn->post.len);
+		if (err != ESP_OK) {
+			goto done;
+		}
+		break;
+	default:
+		break;
+	}
+
+	err = esp_http_client_perform(client);
+	if (err != ESP_OK) {
+		goto done;
+	}
+
+	txn->result = esp_http_client_get_status_code(client);
+
+	switch (txn->type) {
+	case NETWORK_TXN_GET:
+		txn->get.len = esp_http_client_get_content_length(client);
+		break;
+	default:
+		break;
+	}
+
+done:
+	esp_http_client_cleanup(client);
+	return err;
+}
+
 static void network_service_fn(void *param)
 {
 	struct service *service = (struct service *)param;
@@ -147,14 +183,12 @@ static void network_service_fn(void *param)
 		{
 			struct network_txn *txn = (struct network_txn *)smsg.argp;
 
-			esp_http_client_handle_t client = esp_http_client_init(&txn->cfg);
-			esp_err_t err = esp_http_client_perform(client);
-			if (err == ESP_OK) {
-				txn->result = esp_http_client_get_status_code(client);
-				txn->get.len = esp_http_client_get_content_length(client);
+			if (state != CONNECTED) {
+				txn->err = ESP_ERR_INVALID_STATE;
+				txn->result = 599;
+			} else {
+				txn->err = perform_txn(txn);
 			}
-			txn->err = err;
-			esp_http_client_cleanup(client);
 
 			smsg.cmd = NETWORK_CMD_TXN_RESULT;
 			service_send_message(txn->sender, &smsg, 0);
