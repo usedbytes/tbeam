@@ -91,6 +91,33 @@ static int nvs_init()
 	return 0;
 }
 
+#define SERVER_URL "http://192.168.0.10:8080"
+
+static struct network_txn *build_battery_report(struct service *service, uint16_t millivolts)
+{
+	const int max_body_len = strlen("battery=65535") + 1;
+
+	struct network_txn *txn = calloc(1, sizeof(*txn) + max_body_len + 1);
+	if (!txn) {
+		return NULL;
+	}
+
+	txn->sender = service;
+	txn->cfg.url = SERVER_URL;
+	txn->cfg.method = HTTP_METHOD_POST;
+	txn->type = NETWORK_TXN_POST;
+	txn->post.data = (char *)txn + sizeof(*txn);
+	snprintf((char *)txn->post.data, max_body_len, "battery=%4d", millivolts);
+	txn->post.len = strlen(txn->post.data);
+
+	return txn;
+}
+
+static void cleanup_battery_report(struct network_txn *txn)
+{
+	free(txn);
+}
+
 void main_service_fn(void *param)
 {
 	struct service *service = (struct service *)param;
@@ -106,6 +133,9 @@ void main_service_fn(void *param)
 	gps_subscribe_lock_status(gps_service, service);
 
 	network_subscribe_network_status(network_service, service);
+
+	bool network = false;
+	uint16_t battery_mv = 0;
 
 	while (1) {
 		struct service_message smsg;
@@ -137,15 +167,20 @@ void main_service_fn(void *param)
 		case GPS_CMD_LOCK_STATUS:
 			printf("GPS %s\n", smsg.arg ? "locked" : "not locked");
 			break;
+		case PMIC_CMD_REPORT_BATTERY:
+			battery_mv = smsg.arg;
+			if (network) {
+				struct network_txn *txn = build_battery_report(service, battery_mv);
+				if (txn) {
+					network_txn_perform(network_service, txn);
+				}
+			}
+			break;
 		case NETWORK_CMD_NETWORK_STATUS:
 			if (smsg.arg == NETWORK_STATUS_CONNECTED) {
 				ESP_LOGI(TAG, "Network is connected!");
-				struct network_txn *txn = calloc(1, sizeof(*txn));
-				if (txn) {
-					txn->sender = service,
-					txn->cfg.url = "http://example.com",
-					network_txn_perform(network_service, txn);
-				}
+				network = true;
+				pmic_request_battery(pmic_service, service);
 			} else if (smsg.arg == NETWORK_STATUS_FAILED) {
 				ESP_LOGE(TAG, "Network connection failed.");
 			}
@@ -155,6 +190,8 @@ void main_service_fn(void *param)
 			struct network_txn *txn = (struct network_txn *)smsg.argp;
 			ESP_LOGI(TAG, "Transaction %s", txn->err == ESP_OK ? "OK" : "FAIL");
 			ESP_LOGI(TAG, "Network transaction result: %d %d", txn->result, txn->get.len);
+
+			// TODO: Figure out how to handle destructors for txns
 			free(txn);
 			break;
 		}
