@@ -21,13 +21,12 @@
 
 #define PMIC_IRQ       (GPIO_NUM_35)
 
-#define PMIC_CMD_SCOPE SERVICE_SCOPE('p', 'm')
-#define PMIC_CMD(_arg) SERVICE_CMD(PMIC_CMD_SCOPE, _arg)
-
 #define PMIC_CMD_REQUEST_RAIL PMIC_CMD(1)
 #define PMIC_CMD_REQUEST_RAIL_ARG(_rail, _millivolts) ((((_millivolts) & 0xffff) << 16) | ((_rail) & 0xffff))
 
 #define PMIC_CMD_RELEASE_RAIL PMIC_CMD(2)
+
+#define PMIC_CMD_REQUEST_BATTERY PMIC_CMD(3)
 
 static void pmic_service_fn(void *param);
 
@@ -87,12 +86,6 @@ static void power_off(const axp192_t *axp)
 	}
 }
 
-// TODO: Once tasks can request voltages, this can be local to pmic_service_fn
-const axp192_t axp = {
-	.read = &i2c_read,
-	.write = &i2c_write,
-};
-
 static void pmic_service_fn(void *param)
 {
 	struct service *service = (struct service *)param;
@@ -101,6 +94,11 @@ static void pmic_service_fn(void *param)
 	// TODO: DCDC3 should be always on - how to handle that?
 	uint8_t rail_refs[AXP192_RAIL_COUNT] = { 0 };
 	gpio_config_t io_conf;
+
+	const axp192_t axp = {
+		.read = &i2c_read,
+		.write = &i2c_write,
+	};
 
 	i2c_init();
 
@@ -199,6 +197,17 @@ static void pmic_service_fn(void *param)
 			}
 			break;
 		}
+		case PMIC_CMD_REQUEST_BATTERY:
+		{
+			struct service *requestor = smsg.argp;
+			float volts;
+			axp192_read(&axp, AXP192_BATTERY_VOLTAGE, &volts);
+
+			smsg.cmd = PMIC_CMD_REPORT_BATTERY;
+			smsg.arg = volts * 1000;
+			service_send_message(requestor, &smsg, 0);
+			break;
+		}
 		default:
 			// Unknown command
 			break;
@@ -224,6 +233,16 @@ int pmic_release_rail(struct service *service, axp192_rail_t rail)
 	struct service_message smsg = {
 		.cmd = PMIC_CMD_RELEASE_RAIL,
 		.arg = rail,
+	};
+
+	return service_send_message(service, &smsg, 0);
+}
+
+int pmic_request_battery(struct service *service, struct service *requestor)
+{
+	struct service_message smsg = {
+		.cmd = PMIC_CMD_REQUEST_BATTERY,
+		.argp = requestor,
 	};
 
 	return service_send_message(service, &smsg, 0);
