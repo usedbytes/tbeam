@@ -93,24 +93,79 @@ static int nvs_init()
 
 #define SERVER_URL "http://192.168.0.10:8080"
 
+struct battery_report_txn {
+	struct network_txn base;
+	int len;
+	char body[];
+};
+
+static esp_err_t battery_txn_send(struct network_txn *base, network_send_chunk_fn send_chunk, esp_http_client_handle_t client)
+{
+	struct battery_report_txn *txn = (struct battery_report_txn *)base;
+
+	esp_err_t err = send_chunk(client, txn->body, txn->len);
+	if (err != ESP_OK) {
+		return err;
+	}
+
+	err = send_chunk(client, NULL, 0);
+	if (err != ESP_OK) {
+		return err;
+	}
+
+	return ESP_OK;
+}
+
+static esp_err_t battery_txn_receive(struct network_txn *base, network_receive_chunk_fn recv_chunk, esp_http_client_handle_t client)
+{
+	int ret;
+	char buf[512];
+
+	while ((ret = recv_chunk(client, buf, 512)) > 0) {
+		printf("'%.*s'\n", ret, buf);
+	}
+	if (ret < 0) {
+		ESP_LOGE(TAG, "read data failed\n");
+		return ESP_FAIL;
+	}
+
+	return ESP_OK;
+}
+
 static struct network_txn *build_battery_report(struct service *service, uint16_t millivolts)
 {
 	const int max_body_len = strlen("battery=65535") + 1;
 
-	struct network_txn *txn = calloc(1, sizeof(*txn) + max_body_len + 1);
+	struct battery_report_txn *txn = calloc(1, sizeof(*txn) + max_body_len + 1);
 	if (!txn) {
 		return NULL;
 	}
 
-	txn->sender = service;
-	txn->cfg.url = SERVER_URL;
-	txn->cfg.method = HTTP_METHOD_POST;
-	txn->type = NETWORK_TXN_POST;
-	txn->post.data = (char *)txn + sizeof(*txn);
-	snprintf((char *)txn->post.data, max_body_len, "battery=%4d", millivolts);
-	txn->post.len = strlen(txn->post.data);
+	txn->base.sender = service;
+	txn->base.cfg.url = SERVER_URL;
+	txn->base.cfg.method = HTTP_METHOD_POST;
+	txn->base.content_type = "application/x-www-form-urlencoded";
+	txn->base.send_cb = battery_txn_send;
+	txn->base.receive_cb = battery_txn_receive;
 
-	return txn;
+	snprintf(txn->body, max_body_len, "battery=%4d", millivolts);
+	txn->len = strlen(txn->body) + 1;
+
+	return (struct network_txn *)txn;
+}
+
+static struct network_txn *build_blah_txn(struct service *service)
+{
+	struct network_txn *txn = calloc(1, sizeof(*txn));
+	if (!txn) {
+		return NULL;
+	}
+
+	txn->cfg.url = "http://example.com";
+	txn->cfg.method = HTTP_METHOD_GET;
+	txn->receive_cb = battery_txn_receive;
+
+	return (struct network_txn *)txn;
 }
 
 static void cleanup_battery_report(struct network_txn *txn)
@@ -174,6 +229,11 @@ void main_service_fn(void *param)
 				if (txn) {
 					network_txn_perform(network_service, txn);
 				}
+
+				txn = build_blah_txn(service);
+				if (txn) {
+					network_txn_perform(network_service, txn);
+				}
 			}
 			break;
 		case NETWORK_CMD_NETWORK_STATUS:
@@ -189,7 +249,7 @@ void main_service_fn(void *param)
 		{
 			struct network_txn *txn = (struct network_txn *)smsg.argp;
 			ESP_LOGI(TAG, "Transaction %s", txn->err == ESP_OK ? "OK" : "FAIL");
-			ESP_LOGI(TAG, "Network transaction result: %d %d", txn->result, txn->get.len);
+			ESP_LOGI(TAG, "Network transaction result: %d", txn->result);
 
 			// TODO: Figure out how to handle destructors for txns
 			free(txn);

@@ -2,6 +2,7 @@
 // Copyright (c) 2020 Brian Starkey <stark3y@gmail.com>
 
 #include <stdint.h>
+#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -71,35 +72,90 @@ static void notify_subscribers_network_status(struct list_node *subs, uint32_t s
 	}
 }
 
-esp_err_t perform_txn(struct network_txn *txn)
+static esp_err_t send_chunk(esp_http_client_handle_t client, char *data, uint32_t len)
 {
-	esp_err_t err = ESP_OK;
-	esp_http_client_handle_t client = esp_http_client_init(&txn->cfg);
+	int wrote, idx = 0;
+	char chunk[16];
 
-	switch (txn->type) {
-	case NETWORK_TXN_POST:
-		err = esp_http_client_set_post_field(client, txn->post.data, txn->post.len);
-		if (err != ESP_OK) {
-			goto done;
-		}
-		break;
-	default:
-		break;
+	sprintf(chunk, "%X\r\n", len);
+	wrote = esp_http_client_write(client, chunk, strlen(chunk));
+	if (wrote < strlen(chunk)) {
+		ESP_LOGE(TAG, "Short write: %d\n", wrote);
+		return ESP_FAIL;
 	}
 
-	err = esp_http_client_perform(client);
+	while (len) {
+		wrote = esp_http_client_write(client, data + idx, len);
+		if (wrote < 0) {
+			ESP_LOGE(TAG, "write failed: %d\n", wrote);
+			return ESP_FAIL;
+		}
+		len -= wrote;
+		idx += wrote;
+	}
+
+	wrote = esp_http_client_write(client, "\r\n", 2);
+	if (wrote < 2) {
+		ESP_LOGE(TAG, "short write: %d\n", wrote);
+		return ESP_FAIL;
+	}
+
+	return ESP_OK;
+}
+
+esp_err_t perform_txn(struct network_txn *txn)
+{
+	int ret;
+	esp_err_t err = ESP_OK;
+
+	esp_http_client_handle_t client = esp_http_client_init(&txn->cfg);
+	if (!client) {
+		ESP_LOGE(TAG, "failed HTTP client init");
+		return ESP_FAIL;
+	}
+
+	// Set content type if necessary
+	if (txn->content_type && strlen(txn->content_type)) {
+		err = esp_http_client_set_header(client, "Content-Type", txn->content_type);
+		if (err != ESP_OK) {
+			ESP_LOGE(TAG, "failed to set Content-Type");
+			goto done;
+		}
+	}
+
+	// If we've got data to send, open in chunked mode (len = -1)
+	err = esp_http_client_open(client, txn->send_cb ? -1 : 0);
 	if (err != ESP_OK) {
+		ESP_LOGE(TAG, "failed to open HTTP client");
+		goto done;
+	}
+
+	// Ask transaction provider to send data
+	if (txn->send_cb) {
+		err = txn->send_cb(txn, send_chunk, client);
+		if (err != ESP_OK) {
+			ESP_LOGE(TAG, "transaction send failed");
+			goto done;
+		}
+	}
+
+	ret = esp_http_client_fetch_headers(client);
+	if (ret < 0) {
+		ESP_LOGE(TAG, "fetch headers failed\n");
+		err = ESP_FAIL;
 		goto done;
 	}
 
 	txn->result = esp_http_client_get_status_code(client);
+	ESP_LOGI(TAG, "HTTP result: %d\n", ret);
 
-	switch (txn->type) {
-	case NETWORK_TXN_GET:
-		txn->get.len = esp_http_client_get_content_length(client);
-		break;
-	default:
-		break;
+	// Ask transaction provider to receive data
+	if (txn->receive_cb) {
+		err = txn->receive_cb(txn, esp_http_client_read, client);
+		if (err != ESP_OK) {
+			ESP_LOGE(TAG, "transaction receive failed");
+			goto done;
+		}
 	}
 
 done:
@@ -191,7 +247,11 @@ static void network_service_fn(void *param)
 			}
 
 			smsg.cmd = NETWORK_CMD_TXN_RESULT;
-			service_send_message(txn->sender, &smsg, 0);
+			if (txn->sender) {
+				service_send_message(txn->sender, &smsg, 0);
+			} else {
+				free(txn);
+			}
 			break;
 		}
 
