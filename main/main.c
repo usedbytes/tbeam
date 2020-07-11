@@ -91,7 +91,7 @@ static int nvs_init()
 	return 0;
 }
 
-#define SERVER_URL "http://192.168.0.10:8080"
+#define SERVER_URL "http://archer.local:8080"
 
 static struct network_txn *build_battery_report(struct service *service, uint16_t millivolts)
 {
@@ -107,12 +107,61 @@ static struct network_txn *build_battery_report(struct service *service, uint16_
 	return &post->base;
 }
 
+void list_files()
+{
+	DIR *dir = opendir(SPIFFS_MOUNT_POINT);
+	struct dirent *ent;
+	struct stat st;
+	int ret;
+
+	while ((ent = readdir(dir))) {
+		char filename[290];
+		snprintf(filename, 290, "/spiffs/%s", ent->d_name);
+		stat(filename, &st);
+		printf("Entry: %s %ld\n", filename, st.st_size);
+	}
+
+	closedir(dir);
+}
+
+static void spiffs_init()
+{
+	esp_vfs_spiffs_conf_t spiffs_conf = {
+		.base_path = SPIFFS_MOUNT_POINT,
+		.partition_label = NULL,
+		.max_files = 5,
+		.format_if_mount_failed = true
+	};
+	esp_err_t err = esp_vfs_spiffs_register(&spiffs_conf);
+	if (err != ESP_OK) {
+		ESP_LOGE(TAG, "couldn't mount spiffs\n");
+	} else {
+		size_t total = 0, used = 0;
+		err = esp_spiffs_info(spiffs_conf.partition_label, &total, &used);
+		if (err != ESP_OK) {
+			ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s)", esp_err_to_name(err));
+		} else {
+			ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
+		}
+
+		if (used == 0) {
+			FILE *fp = fopen(SPIFFS_MOUNT_POINT "/hello.txt", "w");
+			fwrite("Hello, World!\n", 1, strlen("Hello, World!\n"), fp);
+			fflush(fp);
+			fclose(fp);
+		}
+
+		list_files();
+	}
+}
+
 void main_service_fn(void *param)
 {
 	struct service *service = (struct service *)param;
 
 	gpio_handler_init();
 	nvs_init();
+	spiffs_init();
 
 	struct service *pmic_service = pmic_service_register();
 	struct service *accel_service = accel_service_register();
@@ -134,13 +183,17 @@ void main_service_fn(void *param)
 
 		switch (smsg.cmd) {
 		case SERVICE_CMD_START:
+		{
 			service_start(pmic_service);
 			service_sync(pmic_service);
 
 			service_start(accel_service);
 			service_start(gps_service);
 			service_start(network_service);
+
+			ESP_LOGI(TAG, "services started.\n");
 			break;
+		}
 		case SERVICE_CMD_STOP:
 			service_stop(network_service);
 			service_stop(gps_service);
@@ -171,10 +224,11 @@ void main_service_fn(void *param)
 				network = true;
 				pmic_request_battery(pmic_service, service);
 
-				struct network_txn *txn = network_new_echo_get(NULL);
-				txn->cfg.url = "http://example.com";
+				FILE *fp = fopen(SPIFFS_MOUNT_POINT "/hello.txt", "r");
+				struct network_file_post_txn *txn = network_new_file_post(service, fp);
+				txn->base.cfg.url = SERVER_URL "?filename=hello.txt";
 				if (txn) {
-					network_txn_perform(network_service, txn);
+					network_txn_perform(network_service, &txn->base);
 				}
 			} else if (smsg.arg == NETWORK_STATUS_FAILED) {
 				ESP_LOGE(TAG, "Network connection failed.");
