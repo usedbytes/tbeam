@@ -417,3 +417,49 @@ esp_err_t network_echo_get_receive(struct network_txn *base, network_receive_chu
 
 	return ESP_OK;
 }
+
+struct network_file_post_txn *network_new_file_post(struct service *requestor, FILE *fp)
+{
+	struct network_file_post_txn *txn = calloc(1, sizeof(*txn));
+	if (!txn) {
+		return NULL;
+	}
+
+	txn->base.sender = requestor;
+	txn->base.cfg.method = HTTP_METHOD_POST;
+	txn->base.send_cb = network_file_post_send;
+	txn->base.receive_cb = NULL;
+
+	txn->fp = fp;
+
+	return txn;
+}
+
+esp_err_t network_file_post_send(struct network_txn *base, network_send_chunk_fn send_chunk,
+				   esp_http_client_handle_t client)
+{
+	struct network_file_post_txn *txn = (struct network_file_post_txn *)base;
+	char buf[512];
+	esp_err_t err;
+	int ret;
+
+	while ((ret = fread(buf, 1, sizeof(buf), txn->fp)) > 0) {
+		esp_err_t err = send_chunk(client, buf, ret);
+		if (err != ESP_OK) {
+			break;
+		}
+	}
+	if (!feof(txn->fp) || ferror(txn->fp)) {
+		err = ESP_FAIL;
+		goto done;
+	}
+
+	err = send_chunk(client, NULL, 0);
+	if (err != ESP_OK) {
+		goto done;
+	}
+
+done:
+	fclose(txn->fp);
+	return err;
+}

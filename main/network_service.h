@@ -111,4 +111,27 @@ struct network_txn *network_new_echo_get(struct service *requestor);
 esp_err_t network_echo_get_receive(struct network_txn *base, network_receive_chunk_fn recv_chunk,
 				   esp_http_client_handle_t client);
 
+
+/* Helpers to upload a file.
+ *
+ * The caller needs to set up base.cfg.url at a minimum; and base.content_type
+ * if necessary.
+ *
+ * The network_file_post_send function will close the FILE * when all data has
+ * been sent, or in the case of error.
+ *
+ * All memory allocated by network_new_file_post() can be safely freed by
+ * calling free() on the returned structure. This means that it is also safe
+ * to call network_new_file_post() with requestor set to NULL and the network
+ * service will clean up the structure, as long as the caller hasn't set any
+ * fields to point to dynamically allocated memory.
+ */
+struct network_file_post_txn {
+	struct network_txn base;
+	FILE *fp;
+};
+struct network_file_post_txn *network_new_file_post(struct service *requestor, FILE *fp);
+esp_err_t network_file_post_send(struct network_txn *base, network_send_chunk_fn send_chunk,
+				   esp_http_client_handle_t client);
+
 #endif /* __NETWORK_SERVICE_H__ */
