@@ -347,3 +347,73 @@ int network_txn_perform(struct service *service, struct network_txn *txn)
 
 	return service_send_message(service, &smsg, 0);
 }
+
+esp_err_t network_static_post_send(struct network_txn *base, network_send_chunk_fn send_chunk, esp_http_client_handle_t client)
+{
+	struct network_static_post_txn *txn = (struct network_static_post_txn *)base;
+
+	esp_err_t err = send_chunk(client, txn->data, txn->len);
+	if (err != ESP_OK) {
+		return err;
+	}
+
+	err = send_chunk(client, NULL, 0);
+	if (err != ESP_OK) {
+		return err;
+	}
+
+	return ESP_OK;
+}
+
+struct network_static_post_txn *network_new_static_post(struct service *requestor, char *data, int data_len)
+{
+	struct network_static_post_txn *txn = calloc(1, sizeof(*txn) + data_len);
+	if (!txn) {
+		return NULL;
+	}
+
+	txn->base.sender = requestor;
+	txn->base.cfg.method = HTTP_METHOD_POST;
+	txn->base.send_cb = network_static_post_send;
+	txn->base.receive_cb = NULL;
+
+	txn->len = data_len;
+	if (data) {
+		memcpy(txn->data, data, data_len);
+	}
+
+	return txn;
+}
+
+struct network_txn *network_new_echo_get(struct service *requestor)
+{
+	struct network_txn *txn = calloc(1, sizeof(*txn));
+	if (!txn) {
+		return NULL;
+	}
+
+	txn->sender = requestor;
+	txn->cfg.method = HTTP_METHOD_GET;
+	txn->receive_cb = network_echo_get_receive;
+
+	return (struct network_txn *)txn;
+}
+
+esp_err_t network_echo_get_receive(struct network_txn *base, network_receive_chunk_fn recv_chunk,
+				   esp_http_client_handle_t client)
+{
+	int ret;
+	char buf[32];
+
+	while ((ret = recv_chunk(client, buf, sizeof(buf))) > 0) {
+		printf("%.*s", ret, buf);
+	}
+	if (ret < 0) {
+		ESP_LOGE(TAG, "read data failed\n");
+		return ESP_FAIL;
+	}
+
+	printf("\n");
+
+	return ESP_OK;
+}
