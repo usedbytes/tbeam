@@ -108,7 +108,13 @@ static void accel_service_fn(void *param)
 	timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
 	timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, TIMER_BASE_CLK / (16 * ACCEL_SAMPLES_PER_SEC));
 	timer_enable_intr(TIMER_GROUP_0, TIMER_0);
-	timer_isr_register(TIMER_GROUP_0, TIMER_0, timer_group0_isr, service, ESP_INTR_FLAG_IRAM, NULL);
+
+	// FIXME: There's something wrong with running the ISR with cache
+	// disabled. It crashes in queue.c:1893, which is memcpy().
+	// So, disable IRAM until we manage to figure out what's up. This is
+	// likely to cause irregular sampling frequency, as writes to flash
+	// will interfere with the ISR.
+	timer_isr_register(TIMER_GROUP_0, TIMER_0, timer_group0_isr, service, 0 /* ESP_INTR_FLAG_IRAM */, NULL);
 
 	int idx = 0;
 	uint16_t samples[3][16];
