@@ -40,6 +40,7 @@
 #include "gps_service.h"
 #include "pmic_service.h"
 #include "network_service.h"
+#include "logging_service.h"
 #include "ubx.h"
 
 #define TAG "main"
@@ -342,6 +343,7 @@ void main_service_fn(void *param)
 	struct service *accel_service = accel_service_register();
 	struct service *gps_service = gps_service_register();
 	struct service *network_service = network_service_register();
+	struct service *logging_service = logging_service_register();
 
 	gps_subscribe_lock_status(gps_service, service);
 	gps_subscribe_pvt(gps_service, service);
@@ -378,6 +380,9 @@ void main_service_fn(void *param)
 			service_stop(gps_service);
 			service_stop(accel_service);
 			service_stop(pmic_service);
+
+			service_stop(logging_service);
+			service_sync(logging_service);
 			break;
 		case SERVICE_CMD_PAUSE:
 
@@ -387,6 +392,9 @@ void main_service_fn(void *param)
 			break;
 		case GPS_CMD_LOCK_STATUS:
 			ESP_LOGI(TAG, "GPS %s\n", smsg.arg ? "locked" : "not locked");
+			if (smsg.arg) {
+				service_start(logging_service);
+			}
 			break;
 		case GPS_CMD_PVT:
 		{
