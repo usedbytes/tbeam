@@ -40,6 +40,7 @@
 #include "gps_service.h"
 #include "pmic_service.h"
 #include "network_service.h"
+#include "ubx.h"
 
 #define TAG "main"
 
@@ -317,14 +318,12 @@ static void spiffs_init()
 			ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
 		}
 
-		/*
 		if (used == 0) {
 			FILE *fp = fopen(SPIFFS_MOUNT_POINT "/hello.fit", "w");
 			fwrite("Hello, World!\n", 1, strlen("Hello, World!\n"), fp);
 			fflush(fp);
 			fclose(fp);
 		}
-		*/
 
 		list_files();
 	}
@@ -345,6 +344,7 @@ void main_service_fn(void *param)
 	struct service *network_service = network_service_register();
 
 	gps_subscribe_lock_status(gps_service, service);
+	gps_subscribe_pvt(gps_service, service);
 
 	network_subscribe_network_status(network_service, service);
 
@@ -386,8 +386,16 @@ void main_service_fn(void *param)
 
 			break;
 		case GPS_CMD_LOCK_STATUS:
-			printf("GPS %s\n", smsg.arg ? "locked" : "not locked");
+			ESP_LOGI(TAG, "GPS %s\n", smsg.arg ? "locked" : "not locked");
 			break;
+		case GPS_CMD_PVT:
+		{
+			struct pvt_message *pvt = (struct pvt_message *)smsg.argp;
+			ESP_LOGI(TAG, "GPS NAV PVT\n");
+			ubx_print_nav_pvt(pvt->body);
+			pvt_put(pvt);
+			break;
+		}
 		case PMIC_CMD_REPORT_BATTERY:
 			battery_mv = smsg.arg;
 			if (network) {

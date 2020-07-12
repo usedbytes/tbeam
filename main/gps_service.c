@@ -32,8 +32,13 @@
 
 #define GPS_CMD_SUBSCRIBE_LOCK_STATUS   GPS_CMD(1)
 #define GPS_CMD_UNSUBSCRIBE_LOCK_STATUS GPS_CMD(2)
+#define GPS_CMD_SUBSCRIBE_PVT           GPS_CMD(3)
+#define GPS_CMD_UNSUBSCRIBE_PVT         GPS_CMD(4)
 
 static void gps_service_fn(void *param);
+
+static struct pvt_message *pvt_alloc(struct ubx_nav_pvt *ubx);
+static void pvt_get(struct pvt_message *pvt);
 
 struct service *gps_service_register()
 {
@@ -73,9 +78,13 @@ static void uart_event_handler(void *param)
 	}
 }
 
+
 struct gps_subscriber {
 	struct list_node node;
 	struct service *service;
+#define SUB_MASK_LOCK_STATUS (1 << 0)
+#define SUB_MASK_PVT         (1 << 1)
+	uint32_t mask;
 };
 
 static bool match_subscriber(struct list_node *node, void *data)
@@ -85,16 +94,76 @@ static bool match_subscriber(struct list_node *node, void *data)
 	return entry->service == (struct service *)data;
 }
 
-static void notify_subscribers_lock_status(struct list_node *subs, uint32_t status)
+static void notify_subscribers(struct list_node *subs, uint32_t mask, const struct service_message *smsg)
 {
 	struct gps_subscriber *sub;
+	list_for_each(subs, struct gps_subscriber, node, sub) {
+		if (sub->mask & mask) {
+			service_send_message(sub->service, smsg, 0);
+		}
+	}
+}
+
+static void notify_subscribers_lock_status(struct list_node *subs, uint32_t status)
+{
 	struct service_message smsg = {
 		.cmd = GPS_CMD_LOCK_STATUS,
 		.arg = status,
 	};
 
+	notify_subscribers(subs, SUB_MASK_LOCK_STATUS, &smsg);
+}
+
+static void notify_subscribers_pvt(struct list_node *subs, struct pvt_message *pvt)
+{
+	struct service_message smsg = {
+		.cmd = GPS_CMD_PVT,
+		.argp = pvt,
+	};
+
+	struct gps_subscriber *sub;
 	list_for_each(subs, struct gps_subscriber, node, sub) {
-		service_send_message(sub->service, &smsg, 0);
+		if (sub->mask & SUB_MASK_PVT) {
+			pvt_get(pvt);
+			int ret = service_send_message(sub->service, &smsg, 0);
+			if (ret < 0) {
+				// Send failed.
+				pvt_put(pvt);
+			}
+		}
+	}
+}
+
+static void add_subscription(struct list_node *subs, struct service *service, uint32_t mask)
+{
+	struct gps_subscriber *sub = NULL;
+	struct list_node *node = list_find(subs, match_subscriber, service);
+	if (!node) {
+		sub = calloc(1, sizeof(*sub));
+		if (!sub) {
+			ESP_LOGE(TAG, "out of memory allocating subscriber");
+			return;
+		}
+		sub->service = service;
+		list_add_tail(subs, &sub->node);
+	} else {
+		sub = container_of(node, struct gps_subscriber, node);
+	}
+	sub->mask |= mask;
+}
+
+static void remove_subscription(struct list_node *subs, void *service, uint32_t mask)
+{
+	struct list_node *node = list_find(subs, match_subscriber, service);
+	if (!node) {
+		return;
+	}
+
+	struct gps_subscriber *sub = container_of(node, struct gps_subscriber, node);
+	sub->mask &= ~mask;
+	if (!sub->mask) {
+		list_del(subs, node);
+		free(sub);
 	}
 }
 
@@ -112,7 +181,7 @@ static void gps_service_fn(void *param)
 
 	struct gps_ctx *gps = gps_init(UART_NUM_1, GPS_UART_TXD, GPS_UART_RXD, &ctx->uart_queue);
 
-	struct list_node lock_subs = {
+	struct list_node subs_list = {
 		.next = NULL,
 	};
 
@@ -179,39 +248,32 @@ static void gps_service_fn(void *param)
 
 				if ((state != TRACKING) && (pvt->flags & 1)) {
 					state = TRACKING;
-					notify_subscribers_lock_status(&lock_subs, 1);
+					notify_subscribers_lock_status(&subs_list, 1);
 				} else if ((state == TRACKING) && !(pvt->flags & 1)) {
 					state = ACQUISITION;
-					notify_subscribers_lock_status(&lock_subs, 0);
+					notify_subscribers_lock_status(&subs_list, 0);
 				}
 
-				ubx_print_nav_pvt(pvt);
-				ubx_free(msg);
+				struct pvt_message *pvt_msg = pvt_alloc(pvt);
+				if (pvt) {
+					notify_subscribers_pvt(&subs_list, pvt_msg);
+				}
+				pvt_put(pvt_msg);
 			}
 			break;
 		}
 		case GPS_CMD_SUBSCRIBE_LOCK_STATUS:
-		{
-			struct gps_subscriber *sub = calloc(1, sizeof(*sub));
-			if (!sub) {
-				break;
-			}
-			sub->service = (struct service *)smsg.arg;
-			list_add_tail(&lock_subs, &sub->node);
+			add_subscription(&subs_list, (struct service *)smsg.arg, SUB_MASK_LOCK_STATUS);
 			break;
-		}
 		case GPS_CMD_UNSUBSCRIBE_LOCK_STATUS:
-		{
-			struct list_node *node = list_find(&lock_subs, match_subscriber, (void *)smsg.arg);
-			if (!node) {
-				break;
-			}
-			list_del(&lock_subs, node);
-
-			struct gps_subscriber *sub = container_of(node, struct gps_subscriber, node);
-			free(sub);
+			remove_subscription(&subs_list, (struct service *)smsg.arg, SUB_MASK_LOCK_STATUS);
 			break;
-		}
+		case GPS_CMD_SUBSCRIBE_PVT:
+			add_subscription(&subs_list, (struct service *)smsg.arg, SUB_MASK_PVT);
+			break;
+		case GPS_CMD_UNSUBSCRIBE_PVT:
+			remove_subscription(&subs_list, (struct service *)smsg.arg, SUB_MASK_PVT);
+			break;
 		default:
 			// Unknown command
 			break;
@@ -240,4 +302,69 @@ int gps_unsubscribe_lock_status(struct service *service, struct service *subscri
 	};
 
 	return service_send_message(service, &smsg, 0);
+}
+
+int gps_subscribe_pvt(struct service *service, struct service *subscriber)
+{
+	struct service_message smsg = {
+		.cmd = GPS_CMD_SUBSCRIBE_PVT,
+		.arg = (uint32_t)subscriber,
+	};
+
+	return service_send_message(service, &smsg, 0);
+}
+
+int gps_unsubscribe_pvt(struct service *service, struct service *subscriber)
+{
+	struct service_message smsg = {
+		.cmd = GPS_CMD_UNSUBSCRIBE_PVT,
+		.arg = (uint32_t)subscriber,
+	};
+
+	return service_send_message(service, &smsg, 0);
+}
+
+static struct pvt_message *pvt_alloc(struct ubx_nav_pvt *ubx)
+{
+	struct pvt_message *pvt = calloc(1, sizeof(*pvt));
+	if (!pvt) {
+		return NULL;
+	}
+	vPortCPUInitializeMutex(&pvt->lock);
+	pvt->ref = 1;
+	pvt->body = ubx;
+
+	ESP_LOGD(TAG, "pvt_alloc %p -> %d\n", pvt, pvt->ref);
+
+	return pvt;
+}
+
+void pvt_put(struct pvt_message *pvt)
+{
+	uint32_t ref;
+	portENTER_CRITICAL(&pvt->lock);
+	ref = --pvt->ref;
+	portEXIT_CRITICAL(&pvt->lock);
+
+	ESP_LOGD(TAG, "pvt_put %p -> %d\n", pvt, ref);
+
+	// We were holding the last reference
+	if (ref == 0) {
+		ESP_LOGD(TAG, "pvt_put %p -> free()\n", pvt);
+		ubx_free((struct ubx_message *)pvt->body);
+		free(pvt);
+	}
+}
+
+static void pvt_get(struct pvt_message *pvt)
+{
+	uint32_t ref;
+	portENTER_CRITICAL(&pvt->lock);
+	ref = ++pvt->ref;
+	portEXIT_CRITICAL(&pvt->lock);
+
+	ESP_LOGD(TAG, "pvt_get %p -> %d\n", pvt, ref);
+
+	// Make sure we didn't overflow
+	assert(ref > 0);
 }
