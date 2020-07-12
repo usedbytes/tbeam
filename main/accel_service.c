@@ -42,7 +42,9 @@ static void setup_adc()
 static void IRAM_ATTR timer_group0_isr(void *param) {
 	struct service *service = (struct service *)param;
 	static BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-	static const struct service_message smsg = {
+	// DRAM_ATTR is important otherwise this ends up in flash and the ISR
+	// crashes when cache is disables.
+	static const DRAM_ATTR struct service_message smsg = {
 		.cmd = ACCEL_SERVICE_SAMPLE_CMD,
 	};
 
@@ -108,13 +110,7 @@ static void accel_service_fn(void *param)
 	timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
 	timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, TIMER_BASE_CLK / (16 * ACCEL_SAMPLES_PER_SEC));
 	timer_enable_intr(TIMER_GROUP_0, TIMER_0);
-
-	// FIXME: There's something wrong with running the ISR with cache
-	// disabled. It crashes in queue.c:1893, which is memcpy().
-	// So, disable IRAM until we manage to figure out what's up. This is
-	// likely to cause irregular sampling frequency, as writes to flash
-	// will interfere with the ISR.
-	timer_isr_register(TIMER_GROUP_0, TIMER_0, timer_group0_isr, service, 0 /* ESP_INTR_FLAG_IRAM */, NULL);
+	timer_isr_register(TIMER_GROUP_0, TIMER_0, timer_group0_isr, service, ESP_INTR_FLAG_IRAM, NULL);
 
 	int idx = 0;
 	uint16_t samples[3][16];

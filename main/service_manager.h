@@ -29,8 +29,8 @@ struct service_message {
 struct service *service_register(const char *name, void (*fn)(void *self), UBaseType_t priority, uint32_t stack_depth);
 struct service *service_lookup(const char *name);
 
-int service_send_message_from_isr(struct service *service, const struct service_message *smsg,
-				  BaseType_t *xHigherPriorityTaskWoken);
+int IRAM_ATTR service_send_message_from_isr(struct service *service, const struct service_message *smsg,
+					    BaseType_t *xHigherPriorityTaskWoken);
 int service_send_message(struct service *service, const struct service_message *smsg,
 			 TickType_t timeout);
 int service_receive_message(struct service *service, struct service_message *smsg,
