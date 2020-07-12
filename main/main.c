@@ -112,7 +112,6 @@ void list_files()
 	DIR *dir = opendir(SPIFFS_MOUNT_POINT);
 	struct dirent *ent;
 	struct stat st;
-	int ret;
 
 	while ((ent = readdir(dir))) {
 		char filename[290];
@@ -122,6 +121,180 @@ void list_files()
 	}
 
 	closedir(dir);
+}
+
+struct files {
+	int idx;
+	int num_files;
+	char **filenames;
+};
+
+static int filter(struct dirent *ent)
+{
+	return strstr(ent->d_name, ".fit") != NULL;
+}
+
+static struct files *find_files()
+{
+	int i;
+	struct files *files = calloc(1, sizeof(*files));
+	if (!files) {
+		return NULL;
+	}
+
+	DIR *dir = opendir(SPIFFS_MOUNT_POINT);
+	if (!dir) {
+		ESP_LOGE(TAG, "opendir failed\n");
+		goto free_files;
+	}
+	struct dirent *ent;
+
+	// Scan once to find the number of files
+	errno = 0;
+	while ((ent = readdir(dir))) {
+		if (!filter(ent)) {
+			continue;
+		}
+
+		files->num_files++;
+	}
+	/* XXX: Seems like spiffs returns spurious I/O errors
+	if (errno != 0) {
+		ESP_LOGE(TAG, "first dir scan failed: %d %s\n", errno, strerror(errno));
+		goto close_dir;
+	}
+	*/
+
+	// Nothing to upload
+	if (!files->num_files) {
+		goto close_dir;
+	}
+
+	rewinddir(dir);
+
+	files->filenames = calloc(files->num_files, sizeof(*files->filenames));
+	if (!files->filenames) {
+		ESP_LOGE(TAG, "filenames alloc failed\n");
+		goto close_dir;
+	}
+
+	i = 0;
+	while ((ent = readdir(dir))) {
+		if (!filter(ent)) {
+			continue;
+		}
+
+		files->filenames[i] = malloc(strlen(SPIFFS_MOUNT_POINT) + 1 + strlen(ent->d_name) + 1);
+		if (!files->filenames[i]) {
+			ESP_LOGE(TAG, "filename[%d] alloc failed\n", i);
+			goto free_filenames;
+		}
+		sprintf(files->filenames[i], "%s/%s", SPIFFS_MOUNT_POINT, ent->d_name);
+		i++;
+	}
+	/* XXX: Seems like spiffs returns spurious I/O errors
+	if (errno != 0) {
+		ESP_LOGE(TAG, "second dir scan failed\n");
+		goto free_filenames;
+	}
+	*/
+
+	closedir(dir);
+
+	return files;
+
+free_filenames:
+	for (i = 0; i < files->num_files; i++) {
+		if (files->filenames[i]) {
+			free(files->filenames[i]);
+		}
+	}
+	free(files->filenames);
+close_dir:
+	closedir(dir);
+free_files:
+	free(files);
+	return NULL;
+}
+
+static char *next_file(struct files *files)
+{
+	if (files->idx < files->num_files) {
+		return files->filenames[files->idx++];
+	}
+
+	return NULL;
+}
+
+struct file_upload_txn {
+	struct network_file_post_txn base;
+	char *filename;
+};
+
+static struct file_upload_txn *build_next_upload(struct files *files, struct service *service)
+{
+	if (!files) {
+		return NULL;
+	}
+
+	char *filename = next_file(files);
+	if (!filename) {
+		return NULL;
+	}
+
+	struct file_upload_txn *txn = calloc(1, sizeof(*txn) + (strlen(SERVER_URL) + strlen("?filename=") + strlen(filename) + 1));
+	if (!txn) {
+		return NULL;
+	}
+
+	FILE *fp = fopen(filename, "r");
+	if (!fp) {
+		free(txn);
+		return NULL;
+	}
+
+	txn->base.base.sender = service;
+	txn->base.base.cfg.method = HTTP_METHOD_POST;
+	txn->base.base.send_cb = network_file_post_send;
+	txn->base.base.receive_cb = NULL;
+
+	sprintf((char *)txn + sizeof(*txn), "%s%s%s", SERVER_URL, "?filename=", filename);
+	txn->base.base.cfg.url = (char *)txn + sizeof(*txn);
+
+	txn->base.fp = fp;
+	txn->filename = filename;
+
+	ESP_LOGI(TAG, "built upload transaction for: %s\n", filename);
+
+	return txn;
+}
+
+static esp_err_t finish_upload_txn(struct file_upload_txn *txn)
+{
+	esp_err_t err = ESP_OK;
+
+	if (txn->base.base.err == ESP_OK && txn->base.base.result == 200) {
+		ESP_LOGI(TAG, "upload of %s sucessful, removing\n", txn->filename);
+		unlink(txn->filename);
+	} else {
+		ESP_LOGI(TAG, "upload of %s failed, keeping\n", txn->filename);
+		err = ESP_FAIL;
+	}
+
+	free(txn);
+	return err;
+}
+
+static void free_files(struct files *files)
+{
+	int i;
+	for (i = 0; i < files->num_files; i++) {
+		if (files->filenames[i]) {
+			free(files->filenames[i]);
+		}
+	}
+	free(files->filenames);
+	free(files);
 }
 
 static void spiffs_init()
@@ -144,12 +317,14 @@ static void spiffs_init()
 			ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
 		}
 
+		/*
 		if (used == 0) {
-			FILE *fp = fopen(SPIFFS_MOUNT_POINT "/hello.txt", "w");
+			FILE *fp = fopen(SPIFFS_MOUNT_POINT "/hello.fit", "w");
 			fwrite("Hello, World!\n", 1, strlen("Hello, World!\n"), fp);
 			fflush(fp);
 			fclose(fp);
 		}
+		*/
 
 		list_files();
 	}
@@ -157,6 +332,7 @@ static void spiffs_init()
 
 void main_service_fn(void *param)
 {
+	esp_err_t err;
 	struct service *service = (struct service *)param;
 
 	gpio_handler_init();
@@ -174,6 +350,9 @@ void main_service_fn(void *param)
 
 	bool network = false;
 	uint16_t battery_mv = 0;
+
+	struct files *files_for_upload = NULL;
+	struct file_upload_txn *current_upload = NULL;
 
 	while (1) {
 		struct service_message smsg;
@@ -224,14 +403,24 @@ void main_service_fn(void *param)
 				network = true;
 				pmic_request_battery(pmic_service, service);
 
-				FILE *fp = fopen(SPIFFS_MOUNT_POINT "/hello.txt", "r");
-				struct network_file_post_txn *txn = network_new_file_post(service, fp);
-				txn->base.cfg.url = SERVER_URL "?filename=hello.txt";
-				if (txn) {
-					network_txn_perform(network_service, &txn->base);
+				// If there isn't any pending upload going on, start
+				// a new upload context.
+				// If there *is* some upload in progress, then we can't
+				// do anything and have to let the TXN_RESULT handler
+				// clean up.
+				if (files_for_upload == NULL) {
+					files_for_upload = find_files();
 				}
+				if (current_upload == NULL) {
+					current_upload = build_next_upload(files_for_upload, service);
+					if (current_upload) {
+						network_txn_perform(network_service, &current_upload->base.base);
+					}
+				}
+
 			} else if (smsg.arg == NETWORK_STATUS_FAILED) {
 				ESP_LOGE(TAG, "Network connection failed.");
+				network = false;
 			}
 			break;
 		case NETWORK_CMD_TXN_RESULT:
@@ -240,8 +429,27 @@ void main_service_fn(void *param)
 			ESP_LOGI(TAG, "Transaction %s", txn->err == ESP_OK ? "OK" : "FAIL");
 			ESP_LOGI(TAG, "Network transaction result: %d", txn->result);
 
-			// TODO: Figure out how to handle destructors for txns
-			free(txn);
+			if (txn == &current_upload->base.base) {
+				err = finish_upload_txn(current_upload);
+				current_upload = NULL;
+				if (err == ESP_OK) {
+					// There wasn't any error, so let's try the next file
+					current_upload = build_next_upload(files_for_upload, service);
+				}
+
+				// If we've got a file to upload, then do it.
+				// Otherwise, we either finished or there was an error. In both cases
+				// just clean up.
+				if (current_upload) {
+					network_txn_perform(network_service, &current_upload->base.base);
+				} else {
+					free_files(files_for_upload);
+					files_for_upload = NULL;
+				}
+			} else {
+				// TODO: Figure out how to handle destructors for txns
+				free(txn);
+			}
 			break;
 		}
 		default:
